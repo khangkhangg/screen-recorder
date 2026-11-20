@@ -31,9 +31,11 @@ public sealed class WebcamSource : IAsyncDisposable
         _reader = reader;
         _device = device;
         Size = size;
-        _capture.Failed += (_, _) => RaiseLost();
+        _capture.Failed += OnFailed;
         _reader.FrameArrived += OnFrameArrived;
     }
+
+    void OnFailed(MediaCapture sender, MediaCaptureFailedEventArgs args) => RaiseLost();
 
     public static async Task<IReadOnlyList<(string Id, string Name)>> ListAsync() =>
         (await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture)).Select(d => (d.Id, d.Name)).ToList();
@@ -44,6 +46,7 @@ public sealed class WebcamSource : IAsyncDisposable
         if (access is DeviceAccessStatus.DeniedByUser or DeviceAccessStatus.DeniedBySystem)
             throw new InvalidOperationException("Camera access is turned off in the Windows privacy settings.");
         var capture = new MediaCapture();
+        WebcamSource? webcam = null;
         try
         {
             // CPU memory, because the camera pipeline uses its own graphics device.
@@ -54,7 +57,8 @@ public sealed class WebcamSource : IAsyncDisposable
                 MemoryPreference = MediaCaptureMemoryPreference.Cpu,
                 SharingMode = MediaCaptureSharingMode.ExclusiveControl,
             });
-            var source = capture.FrameSources.Values.FirstOrDefault(s => s.Info.SourceKind == MediaFrameSourceKind.Color)
+            var colors = capture.FrameSources.Values.Where(s => s.Info.SourceKind == MediaFrameSourceKind.Color).ToList();
+            var source = colors.FirstOrDefault(s => s.Info.MediaStreamType == MediaStreamType.VideoRecord) ?? colors.FirstOrDefault()
                 ?? throw new InvalidOperationException("This camera has no color video stream.");
             var format = source.SupportedFormats
                 .Where(f => f.VideoFormat is not null && f.FrameRate.Denominator != 0)
@@ -64,22 +68,19 @@ public sealed class WebcamSource : IAsyncDisposable
             await source.SetFormatAsync(format);
             var reader = await capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8);
             reader.AcquisitionMode = MediaFrameReaderAcquisitionMode.Realtime;
-            var webcam = new WebcamSource(capture, reader, device, new PixelSize((int)format.VideoFormat.Width, (int)format.VideoFormat.Height));
+            webcam = new WebcamSource(capture, reader, device, new PixelSize((int)format.VideoFormat.Width, (int)format.VideoFormat.Height));
             if (await reader.StartAsync() != MediaFrameReaderStartStatus.Success)
-            {
-                await webcam.DisposeAsync();
                 throw new InvalidOperationException("The camera could not start. Another app may be using it.");
-            }
             return webcam;
         }
-        catch (UnauthorizedAccessException e)
+        catch (Exception e)
         {
-            capture.Dispose();
-            throw new InvalidOperationException("Camera access is turned off in the Windows privacy settings.", e);
-        }
-        catch (Exception e) when (e is not InvalidOperationException)
-        {
-            capture.Dispose();
+            // Every failure releases the camera, because exclusive mode keeps it locked until disposed.
+            if (webcam is not null) await webcam.DisposeAsync();
+            else capture.Dispose();
+            if (e is InvalidOperationException) throw;
+            if (e is UnauthorizedAccessException)
+                throw new InvalidOperationException("Camera access is turned off in the Windows privacy settings.", e);
             throw new InvalidOperationException($"Windows could not open the camera (0x{e.HResult:X8}).", e);
         }
     }
@@ -104,10 +105,11 @@ public sealed class WebcamSource : IAsyncDisposable
         try
         {
             using var frame = reader.TryAcquireLatestFrame();
-            var software = frame?.VideoMediaFrame?.SoftwareBitmap;
+            using var software = frame?.VideoMediaFrame?.SoftwareBitmap;
             if (software is null) return;
-            using var bgra = SoftwareBitmap.Convert(software, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-            var bitmap = CanvasBitmap.CreateFromSoftwareBitmap(_device, bgra);
+            var ready = software.BitmapPixelFormat == BitmapPixelFormat.Bgra8 && software.BitmapAlphaMode != BitmapAlphaMode.Straight;
+            using var converted = ready ? null : SoftwareBitmap.Convert(software, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+            var bitmap = CanvasBitmap.CreateFromSoftwareBitmap(_device, converted ?? software);
             lock (_lock)
             {
                 if (_disposed)
@@ -125,6 +127,7 @@ public sealed class WebcamSource : IAsyncDisposable
     // Raised on the thread pool so a handler can dispose the source.
     void RaiseLost()
     {
+        lock (_lock) if (_disposed) return;
         if (Interlocked.Exchange(ref _lost, 1) == 0) ThreadPool.QueueUserWorkItem(_ => Lost?.Invoke());
     }
 
@@ -139,6 +142,7 @@ public sealed class WebcamSource : IAsyncDisposable
             _pending = _current = null;
         }
         _reader.FrameArrived -= OnFrameArrived;
+        _capture.Failed -= OnFailed;
         try { await _reader.StopAsync(); } catch (Exception) { /* camera may be gone */ }
         _reader.Dispose();
         _capture.Dispose();

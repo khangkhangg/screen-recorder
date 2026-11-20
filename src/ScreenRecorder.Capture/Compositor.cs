@@ -92,7 +92,8 @@ public sealed class Compositor : IDisposable
 
     static void DrawCamera(CanvasDrawingSession ds, CanvasBitmap camera, RectF r, CameraShape shape)
     {
-        float w = camera.SizeInPixels.Width, h = camera.SizeInPixels.Height, side = Math.Min(w, h);
+        // DrawImage reads source rectangles in DIPs.
+        float w = (float)camera.Size.Width, h = (float)camera.Size.Height, side = Math.Min(w, h);
         var crop = new Rect((w - side) / 2, (h - side) / 2, side, side);
         using var mask = shape switch
         {

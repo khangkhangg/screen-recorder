@@ -99,6 +99,28 @@ public sealed class CompositorTests : IDisposable
     }
 
     [Fact]
+    public void RoundedSquare_camera_cuts_the_corner_only()
+    {
+        var layout = Layout.Default with { Camera = new(true, 0.1f, 0.1f, 0.25f, CameraShape.RoundedSquare) };
+        var s = _c.DrawFinal(_blue, _red, layout);
+        AssertColor(Blue, Pixel(s, 194, 110));
+        AssertColor(Red, Pixel(s, 327, 110));
+    }
+
+    [Fact]
+    public void Logo_keeps_its_transparency()
+    {
+        var path = Png(400, 200, transparentLeft: true);
+        Assert.Null(_c.SetLogo(path));
+        var layout = Layout.Default with { Logo = new(true, Corner.BottomRight, 0.08f, path) };
+        var r = Layout.LogoRect(layout.Logo, new PixelSize(1920, 1080), new PixelSize(400, 200));
+        var s = _c.DrawFinal(_blue, null, layout);
+        int y = (int)(r.Y + r.Height / 2);
+        AssertColor(Blue, Pixel(s, (int)(r.X + r.Width / 4), y));
+        AssertColor(White, Pixel(s, (int)(r.X + r.Width * 3 / 4), y));
+    }
+
+    [Fact]
     public void Missing_logo_returns_message()
     {
         Assert.NotNull(_c.SetLogo(@"C:\nope.png"));
@@ -124,10 +146,12 @@ public sealed class CompositorTests : IDisposable
         return target;
     }
 
-    string Png(int w, int h)
+    string Png(int w, int h, bool transparentLeft = false)
     {
-        var path = Path.Combine(_dir, $"logo-{w}x{h}.png");
-        using var target = Solid(w, h, White);
+        var path = Path.Combine(_dir, $"logo-{w}x{h}{(transparentLeft ? "-half" : "")}.png");
+        using var target = Solid(w, h, transparentLeft ? Color.FromArgb(0, 0, 0, 0) : White);
+        if (transparentLeft)
+            using (var ds = target.CreateDrawingSession()) ds.FillRectangle(w / 2, 0, w - w / 2, h, White);
         target.SaveAsync(path).AsTask().GetAwaiter().GetResult();
         return path;
     }
