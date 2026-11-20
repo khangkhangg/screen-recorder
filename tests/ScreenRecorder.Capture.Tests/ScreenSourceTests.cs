@@ -20,7 +20,7 @@ public class ScreenSourceTests
     {
         using var src = ScreenSource.Create(new RegionTarget(CaptureTarget.PrimaryMonitor(), 100, 100, 640, 360), CanvasDevice.GetSharedDevice());
         await WaitUntil(() => src.TryGetLatestFrame(out _), TimeSpan.FromSeconds(2));
-        src.TryGetLatestFrame(out var f);
+        Assert.True(src.TryGetLatestFrame(out var f));
         Assert.Equal(new PixelSize(640, 360), src.SourceSize);
         Assert.Equal(640u, f.SizeInPixels.Width);
     }
@@ -50,6 +50,10 @@ public class ScreenSourceTests
     [Fact]
     public void Invalid_window_throws_plain_error() =>
         Assert.Throws<CaptureUnavailableException>(() => ScreenSource.Create(new WindowTarget(0x1), CanvasDevice.GetSharedDevice()));
+
+    [Fact]
+    public void Offscreen_region_throws_plain_error() =>
+        Assert.Throws<CaptureUnavailableException>(() => ScreenSource.Create(new RegionTarget(CaptureTarget.PrimaryMonitor(), 100_000, 0, 640, 360), CanvasDevice.GetSharedDevice()));
 
     [Fact]
     public void LooksBlack_detects_black_frame()

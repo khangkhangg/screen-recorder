@@ -19,20 +19,23 @@ public sealed class ScreenSource : IDisposable
 {
     // shortcut: assumes the Windows "SDR content brightness" is 200 nits and clips HDR highlights, read DISPLAYCONFIG_SDR_WHITE_LEVEL if HDR captures look too bright or dark.
     const float SdrWhiteNits = 200;
+    const string RegionError = "The selected area is empty or outside the screen.";
 
     readonly CaptureTarget _target;
     readonly CanvasDevice _device;
     readonly Direct3D11CaptureFramePool _pool;
     readonly GraphicsCaptureSession _session;
+    readonly GraphicsCaptureItem _item;
     readonly Timer _watch;
-    int _closed;
+    bool _closed;
+    PixelSize _sourceSize;
     readonly bool _hdr;
     readonly Lock _lock = new();
     SizeInt32 _poolSize;
     CanvasBitmap? _pending, _current;
     bool _disposed;
 
-    public PixelSize SourceSize { get; private set; }
+    public PixelSize SourceSize { get { lock (_lock) return _sourceSize; } }
     public event Action? Closed;
 
     public Windows.Foundation.Rect? WindowBounds =>
@@ -44,6 +47,7 @@ public sealed class ScreenSource : IDisposable
     {
         _target = target;
         _device = device;
+        _item = item;
         _hdr = IsHdr(target switch
         {
             MonitorTarget m => m.Hmonitor,
@@ -52,22 +56,41 @@ public sealed class ScreenSource : IDisposable
             _ => 0,
         });
         _poolSize = item.Size;
-        SourceSize = target is RegionTarget region ? new(region.Width, region.Height) : new(_poolSize.Width, _poolSize.Height);
+        _sourceSize = target is RegionTarget region ? new(region.Width, region.Height) : new(_poolSize.Width, _poolSize.Height);
         _pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, Format, 2, _poolSize);
-        _session = _pool.CreateCaptureSession(item);
-        _session.IsCursorCaptureEnabled = true;
-        if (ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsBorderRequired"))
-            NativeMethods.HideBorder(_session);
-        item.Closed += (_, _) => RaiseClosed();
-        // item.Closed did not fire in tests when the window's process ended, so also check every 500 ms.
-        _watch = new Timer(_ => { if (!NativeMethods.Exists(target)) RaiseClosed(); }, null, 500, 500);
-        _pool.FrameArrived += OnFrameArrived;
-        _session.StartCapture();
+        try
+        {
+            _session = _pool.CreateCaptureSession(item);
+            _session.IsCursorCaptureEnabled = true;
+            if (ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsBorderRequired"))
+                NativeMethods.HideBorder(_session);
+            item.Closed += OnItemClosed;
+            _pool.FrameArrived += OnFrameArrived;
+            _session.StartCapture();
+            // item.Closed did not fire in tests when the window's process ended, so also check every 500 ms.
+            _watch = new Timer(_ => { if (!NativeMethods.Exists(target)) RaiseClosed(); }, null, 500, 500);
+        }
+        catch
+        {
+            item.Closed -= OnItemClosed;
+            _pool.FrameArrived -= OnFrameArrived;
+            _session?.Dispose();
+            _pool.Dispose();
+            throw;
+        }
     }
 
+    void OnItemClosed(GraphicsCaptureItem sender, object args) => RaiseClosed();
+
+    // Raises Closed at most once, and never after Dispose.
     void RaiseClosed()
     {
-        if (Interlocked.Exchange(ref _closed, 1) == 0) Closed?.Invoke();
+        lock (_lock)
+        {
+            if (_disposed || _closed) return;
+            _closed = true;
+        }
+        Closed?.Invoke();
     }
 
     DirectXPixelFormat Format => _hdr ? DirectXPixelFormat.R16G16B16A16Float : DirectXPixelFormat.B8G8R8A8UIntNormalized;
@@ -77,13 +100,15 @@ public sealed class ScreenSource : IDisposable
         if (!GraphicsCaptureSession.IsSupported())
             throw new CaptureUnavailableException("Screen capture is not supported on this PC.");
         if (target is RegionTarget { X: < 0 } or RegionTarget { Y: < 0 } or RegionTarget { Width: <= 0 } or RegionTarget { Height: <= 0 })
-            throw new CaptureUnavailableException("The selected area is empty or outside the screen.");
+            throw new CaptureUnavailableException(RegionError);
         GraphicsCaptureItem item;
         try { item = NativeMethods.CreateItem(target); }
         catch (Exception e)
         {
             throw new CaptureUnavailableException(target is WindowTarget ? "This window cannot be recorded." : "This screen cannot be recorded.", e);
         }
+        if (target is RegionTarget r && (r.X >= item.Size.Width || r.Y >= item.Size.Height))
+            throw new CaptureUnavailableException(RegionError);
         return new ScreenSource(target, device, item);
     }
 
@@ -105,6 +130,13 @@ public sealed class ScreenSource : IDisposable
     // Runs on a thread-pool thread.
     void OnFrameArrived(Direct3D11CaptureFramePool pool, object _)
     {
+        // WinRT swallows exceptions from this handler, so report them as Closed to stop the recording instead of freezing it.
+        try { HandleFrame(pool); }
+        catch (Exception) { RaiseClosed(); }
+    }
+
+    void HandleFrame(Direct3D11CaptureFramePool pool)
+    {
         using var frame = pool.TryGetNextFrame();
         if (frame is null) return;
         lock (_lock)
@@ -115,7 +147,7 @@ public sealed class ScreenSource : IDisposable
                 // This frame still has the old size, so drop it and wait for one at the new size.
                 _poolSize = frame.ContentSize;
                 _pool.Recreate(_device, Format, 2, _poolSize);
-                if (_target is not RegionTarget) SourceSize = new(_poolSize.Width, _poolSize.Height);
+                if (_target is not RegionTarget) _sourceSize = new(_poolSize.Width, _poolSize.Height);
                 return;
             }
         }
@@ -194,6 +226,7 @@ public sealed class ScreenSource : IDisposable
             _disposed = true;
         }
         _watch.Dispose();
+        _item.Closed -= OnItemClosed;
         _pool.FrameArrived -= OnFrameArrived;
         _session.Dispose();
         _pool.Dispose();
