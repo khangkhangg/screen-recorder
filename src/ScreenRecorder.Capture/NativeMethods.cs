@@ -65,6 +65,16 @@ static class NativeMethods
         finally { Marshal.Release(ptr); }
     }
 
+    [ComImport, Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IDirect3DDxgiInterfaceAccess
+    {
+        nint GetInterface(ref Guid iid);
+    }
+
+    // Returns an owned pointer to the D3D object behind a WinRT device or surface.
+    public static nint DxgiInterface(object winrt, Guid iid) =>
+        WinRT.CastExtensions.As<IDirect3DDxgiInterfaceAccess>(winrt).GetInterface(ref iid);
+
     public static void HideBorder(GraphicsCaptureSession session) =>
         WinRT.CastExtensions.As<IGraphicsCaptureSession3>(session).SetIsBorderRequired(false);
 }
