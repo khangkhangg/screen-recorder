@@ -55,4 +55,18 @@ public class RecordingClockTests
         Assert.Equal(TimeSpan.FromSeconds(1), c.MediaTime);
         Assert.Empty(c.Pauses);
     }
+
+    [Fact]
+    public void Frames_exact_at_boundary()
+    {
+        var c = Make(100); c.Start(); Advance(0.29);
+        Assert.Equal(29, c.FramesDue);
+    }
+
+    [Fact]
+    public void Start_twice_is_ignored()
+    {
+        var c = Make(); c.Start(); Advance(1); c.Start(); Advance(1);
+        Assert.Equal(TimeSpan.FromSeconds(2), c.MediaTime);
+    }
 }
