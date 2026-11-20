@@ -19,9 +19,7 @@ public static class Screenshot
         }
 
         Directory.CreateDirectory(outputRoot);
-        var stem = Path.Combine(outputRoot, $"Screenshot {DateTime.Now:yyyy-MM-dd HH-mm-ss}");
-        var path = stem + ".png";
-        for (var n = 2; File.Exists(path); n++) path = $"{stem} ({n}).png";
+        var path = UniquePath(outputRoot, DateTime.Now);
 
         using (var stream = new FileStream(path, FileMode.CreateNew).AsRandomAccessStream())
             await frame!.SaveAsync(stream, CanvasBitmapFileFormat.Png);
@@ -35,8 +33,16 @@ public static class Screenshot
                 Clipboard.SetContent(data);
                 Clipboard.Flush();
             }
-            catch (Exception) { } // the saved file is the result, so a clipboard failure must not lose it
+            catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
         }
+        return path;
+    }
+
+    public static string UniquePath(string folder, DateTime time)
+    {
+        var stem = Path.Combine(folder, $"Screenshot {time:yyyy-MM-dd HH-mm-ss}");
+        var path = stem + ".png";
+        for (var n = 2; File.Exists(path); n++) path = $"{stem} ({n}).png";
         return path;
     }
 }

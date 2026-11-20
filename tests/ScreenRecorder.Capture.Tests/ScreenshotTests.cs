@@ -38,16 +38,20 @@ public class ScreenshotTests
     }
 
     [Fact]
-    public async Task Same_second_screenshots_get_separate_files()
+    public void Same_second_names_get_a_counter()
     {
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(temp);
         try
         {
-            var target = new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200);
-            var a = await Screenshot.CaptureAsync(target, temp, copyToClipboard: false);
-            var b = await Screenshot.CaptureAsync(target, temp, copyToClipboard: false);
-            Assert.NotEqual(a, b);
-            Assert.True(File.Exists(a) && File.Exists(b));
+            var t = new DateTime(2026, 11, 20, 10, 30, 0);
+            var first = Screenshot.UniquePath(temp, t);
+            Assert.EndsWith("Screenshot 2026-11-20 10-30-00.png", first);
+            File.WriteAllText(first, "");
+            var second = Screenshot.UniquePath(temp, t);
+            Assert.EndsWith(" (2).png", second);
+            File.WriteAllText(second, "");
+            Assert.EndsWith(" (3).png", Screenshot.UniquePath(temp, t));
         }
         finally { Directory.Delete(temp, true); }
     }
