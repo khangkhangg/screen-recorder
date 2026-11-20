@@ -15,7 +15,7 @@ public class CaptureUnavailableException(string message, Exception? inner = null
 
 // Frames from TryGetLatestFrame belong to this source. They stay valid until the next
 // TryGetLatestFrame call or Dispose, so callers must not dispose or keep them.
-public sealed class ScreenSource : IDisposable
+public sealed class ScreenSource : IScreenSource
 {
     // shortcut: assumes the Windows "SDR content brightness" is 200 nits and clips HDR highlights, read DISPLAYCONFIG_SDR_WHITE_LEVEL if HDR captures look too bright or dark.
     const float SdrWhiteNits = 200;

@@ -9,7 +9,7 @@ using Windows.Media.MediaProperties;
 
 namespace ScreenRecorder.Capture;
 
-public sealed class WebcamSource : IAsyncDisposable
+public sealed class WebcamSource : IWebcamSource
 {
     // Frames from TryGetLatestFrame belong to this source. They stay valid until the next
     // TryGetLatestFrame call or Dispose, so callers must not dispose or keep them.

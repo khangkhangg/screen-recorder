@@ -11,7 +11,7 @@ using Windows.Graphics.DirectX.Direct3D11;
 namespace ScreenRecorder.Capture;
 
 // Writes H.264 video and AAC audio into a fragmented MP4, so a file cut off by a crash still plays.
-public sealed class VideoFileWriter : IDisposable
+public sealed class VideoFileWriter : IVideoWriter
 {
     const int AudioRate = 48000;
     const long TicksPerSecond = 10_000_000;
