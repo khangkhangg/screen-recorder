@@ -12,8 +12,14 @@ public record Settings(string OutputFolder, Hotkey RecordHotkey, Hotkey Screensh
 
     public static Settings Load(string path)
     {
-        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), SessionJson.Options) ?? Default; }
-        catch { return Default; } // missing or corrupt file both fall back to defaults
+        try
+        {
+            var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), SessionJson.Options);
+            // missing fields deserialize to null or 0, which the app cannot use
+            return s is null || s.FrameRate <= 0 || s.OutputFolder is null || s.RecordHotkey is null
+                || s.ScreenshotHotkey is null || s.Layout is null ? Default : s;
+        }
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { return Default; }
     }
 
     public void Save(string path)

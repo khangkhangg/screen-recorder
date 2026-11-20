@@ -22,4 +22,12 @@ public class SettingsTests
         Assert.Equivalent(Settings.Default, Settings.Load(path));
         Assert.Equivalent(Settings.Default, Settings.Load(path + ".none"));
     }
+
+    [Fact]
+    public void Empty_object_gives_default()
+    {
+        var path = Path.GetTempFileName();
+        File.WriteAllText(path, "{}");
+        Assert.Equivalent(Settings.Default, Settings.Load(path));
+    }
 }
