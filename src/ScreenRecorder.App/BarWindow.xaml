@@ -42,7 +42,7 @@
                     </MenuFlyout>
                 </DropDownButton.Flyout>
             </DropDownButton>
-            <DropDownButton Height="36" ToolTipService.ToolTip="Logo" AutomationProperties.Name="Logo">
+            <DropDownButton x:Name="LogoButton" Height="36" ToolTipService.ToolTip="Logo" AutomationProperties.Name="Logo">
                 <FontIcon Glyph="&#xE91B;" FontSize="16" />
                 <DropDownButton.Flyout>
                     <MenuFlyout Placement="Bottom">
@@ -54,21 +54,34 @@
 
             <AppBarSeparator />
 
-            <!-- Disabled buttons get no pointer input, so the tooltip sits on a wrapper. -->
-            <Grid Background="Transparent" ToolTipService.ToolTip="Recording comes in a later step">
-                <Button Width="40" Height="36" IsEnabled="False" AutomationProperties.Name="Record">
-                    <FontIcon Glyph="&#xE7C8;" FontSize="16" />
-                </Button>
-            </Grid>
-            <Button Width="40" Height="36" Click="Screenshot_Click"
+            <Button x:Name="RecordButton" Width="40" Height="36" Click="Record_Click"
+                    ToolTipService.ToolTip="Record" AutomationProperties.Name="Record">
+                <Grid>
+                    <FontIcon x:Name="RecordIcon" Glyph="&#xE7C8;" FontSize="16" />
+                    <TextBlock x:Name="CountdownText" Visibility="Collapsed" FontSize="16" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Grid>
+            </Button>
+            <TextBlock x:Name="TimerText" Visibility="Collapsed" Text="0:00" FontSize="14" Margin="6,0"
+                       VerticalAlignment="Center" AutomationProperties.Name="Recording time" />
+            <TextBlock x:Name="FpsText" Visibility="Collapsed" FontSize="12" Margin="0,0,6,0" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="Screens larger than 2560 x 1440 record at 30 frames per second." />
+            <Button x:Name="PauseButton" Visibility="Collapsed" Width="40" Height="36" Click="Pause_Click"
+                    ToolTipService.ToolTip="Pause" AutomationProperties.Name="Pause">
+                <FontIcon x:Name="PauseIcon" Glyph="&#xE769;" FontSize="16" />
+            </Button>
+            <Button x:Name="StopButton" Visibility="Collapsed" Width="40" Height="36" Click="Stop_Click"
+                    ToolTipService.ToolTip="Stop" AutomationProperties.Name="Stop">
+                <FontIcon Glyph="&#xE71A;" FontSize="16" />
+            </Button>
+            <Button x:Name="ScreenshotButton" Width="40" Height="36" Click="Screenshot_Click"
                     ToolTipService.ToolTip="Screenshot" AutomationProperties.Name="Screenshot">
                 <FontIcon Glyph="&#xE722;" FontSize="16" />
             </Button>
-            <Grid Background="Transparent" ToolTipService.ToolTip="Settings">
-                <Button Width="40" Height="36" IsEnabled="False" AutomationProperties.Name="Settings">
-                    <FontIcon Glyph="&#xE713;" FontSize="16" />
-                </Button>
-            </Grid>
+            <Button x:Name="SettingsButton" Width="40" Height="36" Click="Settings_Click"
+                    ToolTipService.ToolTip="Settings" AutomationProperties.Name="Settings">
+                <FontIcon Glyph="&#xE713;" FontSize="16" />
+            </Button>
         </StackPanel>
     </Border>
 </Window>

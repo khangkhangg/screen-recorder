@@ -56,6 +56,8 @@ public sealed class RecordingSession : IAsyncDisposable
 
     public event Action<RecordingResult>? StoppedByItself;
 
+    public TimeSpan Elapsed => _clock.MediaTime;
+
     RecordingSession(RecordingOptions o, PreflightResult p)
     {
         _o = o;

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -62,7 +63,20 @@ public sealed partial class BarWindow : Window
         follow = DispatcherQueue.CreateTimer();
         follow.Interval = TimeSpan.FromMilliseconds(100);
         follow.Tick += (_, _) => FollowWindow();
-        Closed += (_, _) => { follow.Stop(); cameraOverlay.Close(); logoOverlay.Close(); };
+        clock = DispatcherQueue.CreateTimer();
+        clock.Interval = TimeSpan.FromMilliseconds(250);
+        clock.Tick += (_, _) => ShowElapsed();
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; hotkeys?.Dispose(); settingsWindow?.Close(); cameraOverlay.Close(); logoOverlay.Close(); };
+        cameraOverlay.WebcamId = settings.WebcamId;
+        // Closing the bar while recording saves the recording first.
+        AppWindow.Closing += async (_, e) =>
+        {
+            if (session is null || busy) return;
+            e.Cancel = true;
+            await StopRecording();
+            Close();
+        };
+        RegisterHotkeys();
         Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
     }
 
@@ -103,10 +117,8 @@ public sealed partial class BarWindow : Window
     // or centered near the top of the primary monitor.
     void PlaceWindow()
     {
+        FitSize();
         var scale = Root.XamlRoot.RasterizationScale;
-        Root.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        var size = new SizeInt32((int)Math.Ceiling(Root.DesiredSize.Width * scale), (int)Math.Ceiling(Root.DesiredSize.Height * scale));
-        AppWindow.ResizeClient(size);
 
         PointInt32? saved = null;
         try
@@ -178,8 +190,16 @@ public sealed partial class BarWindow : Window
         UpdateOverlays();
     }
 
+    void FitSize()
+    {
+        var scale = Root.XamlRoot.RasterizationScale;
+        Root.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        AppWindow.ResizeClient(new SizeInt32((int)Math.Ceiling(Root.DesiredSize.Width * scale), (int)Math.Ceiling(Root.DesiredSize.Height * scale)));
+    }
+
     void Save(Settings s)
     {
+        if (s.Layout != settings.Layout) session?.SetLayout(s.Layout);
         settings = s;
         UpdateOverlays();
         try { settings.Save(SettingsPath); }
@@ -210,7 +230,9 @@ public sealed partial class BarWindow : Window
         RemoveLogoItem.IsEnabled = false;
     }
 
-    async void Screenshot_Click(object sender, RoutedEventArgs e)
+    void Screenshot_Click(object sender, RoutedEventArgs e) => TakeScreenshot();
+
+    async void TakeScreenshot()
     {
         try { await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder); }
         catch (CaptureUnavailableException ex) { NativeMethods.ShowWarning(hwnd, ex.Message, "Screenshot"); }
@@ -218,5 +240,185 @@ public sealed partial class BarWindow : Window
         {
             NativeMethods.ShowWarning(hwnd, $"The screenshot could not be saved to {settings.OutputFolder}.", "Screenshot");
         }
+    }
+
+    readonly DispatcherQueueTimer clock;
+    RecorderState state = RecorderState.Idle;
+    RecordingSession? session;
+    bool busy, showFps;
+    int countdownRun;
+
+    void Record_Click(object sender, RoutedEventArgs e) => ToggleRecord();
+    void Stop_Click(object sender, RoutedEventArgs e) => ToggleRecord();
+    void Pause_Click(object sender, RoutedEventArgs e) => TogglePause();
+
+    async void ToggleRecord()
+    {
+        if (busy) return;
+        if (state == RecorderState.Idle) await StartRecording();
+        else if (state == RecorderState.Countdown) SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
+        else await StopRecording();
+    }
+
+    void TogglePause()
+    {
+        if (busy || session is null) return;
+        SetState(RecorderStateMachine.Next(state, RecorderCommand.TogglePause, settings.Countdown));
+        if (state == RecorderState.Paused) session.Pause();
+        else session.Resume();
+        ShowElapsed();
+    }
+
+    static bool IsStartError(Exception e) =>
+        e is CaptureUnavailableException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException;
+
+    void Fail(Exception e)
+    {
+        NativeMethods.ShowWarning(hwnd, e.Message, "Record");
+        state = RecorderStateMachine.Next(state, RecorderCommand.Failed, settings.Countdown);
+    }
+
+    async Task StartRecording()
+    {
+        RecordingOptions options;
+        PreflightResult p;
+        busy = true;
+        SetState(state);
+        try
+        {
+            var firstCam = settings.Layout.Camera.Visible && settings.WebcamId is null ? (await WebcamSource.ListAsync()).FirstOrDefault().Id : null;
+            options = RecordingOptionsBuilder.Build(settings, CurrentTarget, firstCam);
+            p = await RecordingSession.PreflightAsync(options);
+            if (p.LooksBlack)
+            {
+                NativeMethods.ShowWarning(hwnd, "This window cannot be captured. It may be protected or running as administrator.", "Record");
+                return;
+            }
+            if (p.Encoders == EncoderSupport.TooFewHardwareSessions)
+            {
+                if (!NativeMethods.AskYesCancel(hwnd, "This PC cannot encode 3 videos at once. Save the raw files only, without the finished video?", "Record")) return;
+                options = options with { WriteFinal = false };
+            }
+            if (p.Encoders == EncoderSupport.SoftwareOnly)
+                NativeMethods.ShowWarning(hwnd, "No hardware video encoder was found. Recording will run at 30 frames per second.", "Record");
+            if (p.ScaledDown)
+                NativeMethods.ShowWarning(hwnd, $"The captured area is larger than the encoder accepts. The video will be scaled down to {p.FrameSize.Width} x {p.FrameSize.Height}.", "Record");
+            showFps = p.FrameRate < options.FrameRate && p.Encoders != EncoderSupport.SoftwareOnly;
+            FpsText.Text = $"{p.FrameRate} fps";
+        }
+        catch (Exception e) when (IsStartError(e)) { Fail(e); return; }
+        finally { busy = false; SetState(state); }
+
+        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
+        var run = ++countdownRun;
+        for (var n = 3; n > 0 && state == RecorderState.Countdown; n--)
+        {
+            CountdownText.Text = n.ToString();
+            await Task.Delay(1000);
+            if (run != countdownRun) return; // cancelled and started again during this second
+        }
+        if (state == RecorderState.Countdown) SetState(RecorderStateMachine.Next(state, RecorderCommand.CountdownDone, settings.Countdown));
+        if (state != RecorderState.Recording) return;
+
+        busy = true;
+        SetState(state);
+        try
+        {
+            var s = await RecordingSession.StartAsync(options, p);
+            s.StoppedByItself += r => DispatcherQueue.TryEnqueue(() => StoppedByItself(s, r));
+            session = s;
+            ShowElapsed();
+            clock.Start();
+        }
+        catch (Exception e) when (IsStartError(e)) { Fail(e); }
+        finally { busy = false; SetState(state); }
+    }
+
+    async Task StopRecording()
+    {
+        var s = session!;
+        busy = true;
+        clock.Stop();
+        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
+        RecordingResult result;
+        try
+        {
+            result = await s.StopAsync();
+            await s.DisposeAsync();
+        }
+        finally { session = null; busy = false; SetState(state); }
+        var lines = result.Notes.Where(n => n.StartsWith("webcam lost") || n.StartsWith("mic lost") || n.StartsWith("system sound lost") || n.Contains("disk")).ToList();
+        if (result.DroppedFrames > 0) lines.Insert(0, $"Dropped frames in the finished video: {result.DroppedFrames}");
+        if (lines.Count > 0) NativeMethods.ShowWarning(hwnd, string.Join("\n", lines), "Recording");
+        System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\"");
+    }
+
+
+    void StoppedByItself(RecordingSession s, RecordingResult r)
+    {
+        if (session != s || busy) return; // a stop by the user is already saving it
+        session = null;
+        clock.Stop();
+        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
+        _ = s.DisposeAsync();
+        if (r.Notes.Count > 0) NativeMethods.ShowWarning(hwnd, r.Notes[^1], "Recording");
+    }
+
+    void ShowElapsed()
+    {
+        if (session is null) return;
+        var t = session.Elapsed;
+        TimerText.Text = t.ToString(t.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss");
+    }
+
+    // The one place that maps the recorder state to what the bar shows.
+    void SetState(RecorderState s)
+    {
+        state = s;
+        bool idle = s == RecorderState.Idle, countdown = s == RecorderState.Countdown, live = !idle && !countdown;
+        Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
+        RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
+        RecordButton.Visibility = MicToggle.Visibility = SoundToggle.Visibility = ScreenshotButton.Visibility = Shown(!live);
+        RecordIcon.Visibility = Shown(!countdown);
+        CountdownText.Visibility = Shown(countdown);
+        var recordName = countdown ? "Cancel countdown" : "Record";
+        ToolTipService.SetToolTip(RecordButton, recordName);
+        AutomationProperties.SetName(RecordButton, recordName);
+        TimerText.Visibility = PauseButton.Visibility = StopButton.Visibility = Shown(live);
+        FpsText.Visibility = Shown(live && showFps);
+        var pauseName = s == RecorderState.Paused ? "Resume" : "Pause";
+        PauseIcon.Glyph = s == RecorderState.Paused ? "" : "";
+        ToolTipService.SetToolTip(PauseButton, pauseName);
+        AutomationProperties.SetName(PauseButton, pauseName);
+        TargetButton.IsEnabled = LogoButton.IsEnabled = SettingsButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
+        if (Root.XamlRoot is not null) FitSize();
+    }
+
+    GlobalHotkeys? hotkeys;
+    (bool Record, bool Screenshot) hotkeysOk;
+    SettingsWindow? settingsWindow;
+
+    (bool, bool) RegisterHotkeys()
+    {
+        hotkeys?.Dispose();
+        hotkeys = new GlobalHotkeys(hwnd);
+        return hotkeysOk = (hotkeys.Register(settings.RecordHotkey, ToggleRecord), hotkeys.Register(settings.ScreenshotHotkey, TakeScreenshot));
+    }
+
+    void Settings_Click(object sender, RoutedEventArgs e)
+    {
+        if (settingsWindow is null)
+        {
+            settingsWindow = new SettingsWindow(settings, hotkeysOk, ApplySettings);
+            settingsWindow.Closed += (_, _) => settingsWindow = null;
+        }
+        settingsWindow.Activate();
+    }
+
+    (bool, bool) ApplySettings(Settings s)
+    {
+        Save(s);
+        cameraOverlay.WebcamId = s.WebcamId;
+        return RegisterHotkeys();
     }
 }

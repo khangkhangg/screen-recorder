@@ -27,6 +27,20 @@ public sealed class CameraOverlayWindow : Window
 
     public event Action<CameraItem>? Changed;
 
+    // null means the first camera
+    public string? WebcamId
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            if (!shown || opening) return;
+            CloseCamera();
+            OpenCamera();
+        }
+    }
+
     public CameraOverlayWindow()
     {
         Content = canvas;
@@ -92,10 +106,9 @@ public sealed class CameraOverlayWindow : Window
         opening = true;
         try
         {
-            // shortcut: uses the first camera, pass Settings.Webcam here once the app can pick a camera
-            var cameras = await WebcamSource.ListAsync();
-            if (cameras.Count == 0) return;
-            var source = await WebcamSource.OpenAsync(cameras[0].Id, CanvasDevice.GetSharedDevice(), sharedReadOnly: true);
+            var id = WebcamId ?? (await WebcamSource.ListAsync()).FirstOrDefault().Id;
+            if (id is null) return;
+            var source = await WebcamSource.OpenAsync(id, CanvasDevice.GetSharedDevice(), sharedReadOnly: true);
             if (!shown) { await source.DisposeAsync(); return; }
             webcam = source;
             redraw.Start();

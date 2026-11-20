@@ -126,4 +126,21 @@ static class NativeMethods
     }
 
     public static void ShowWarning(nint hwnd, string text, string caption) => MessageBoxW(hwnd, text, caption, MB_ICONWARNING);
+
+    // Needs comctl32 version 6, which app.manifest asks for.
+    [DllImport("comctl32.dll", CharSet = CharSet.Unicode)] static extern int TaskDialog(nint hwnd, nint instance, string title, string? instruction, string content, int buttons, nint icon, out int pressed);
+
+    public static bool AskYesCancel(nint hwnd, string text, string caption)
+    {
+        const int TDCBF_YES_BUTTON = 2, TDCBF_CANCEL_BUTTON = 8, IDYES = 6;
+        TaskDialog(hwnd, 0, caption, null, text, TDCBF_YES_BUTTON | TDCBF_CANCEL_BUTTON, -1, out var pressed); // -1 is TD_WARNING_ICON
+        return pressed == IDYES;
+    }
+
+    public delegate nint SubclassProc(nint hwnd, uint msg, nint wParam, nint lParam, nuint id, nuint data);
+    [DllImport("comctl32.dll")] public static extern bool SetWindowSubclass(nint hwnd, SubclassProc proc, nuint id, nuint data);
+    [DllImport("comctl32.dll")] public static extern bool RemoveWindowSubclass(nint hwnd, SubclassProc proc, nuint id);
+    [DllImport("comctl32.dll")] public static extern nint DefSubclassProc(nint hwnd, uint msg, nint wParam, nint lParam);
+    [DllImport("user32.dll")] public static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint vk);
+    [DllImport("user32.dll")] public static extern bool UnregisterHotKey(nint hwnd, int id);
 }

@@ -51,6 +51,21 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Elapsed_stops_growing_while_paused()
+    {
+        await using var s = await Start(Options());
+        await Task.Delay(500);
+        s.Pause();
+        var paused = s.Elapsed;
+        await Task.Delay(500);
+        Assert.Equal(paused, s.Elapsed);
+        Assert.InRange(paused.TotalSeconds, 0.3, 1.5);
+        s.Resume();
+        await Task.Delay(300);
+        Assert.True(s.Elapsed > paused);
+    }
+
+    [Fact]
     public async Task Layout_changes_are_logged()
     {
         await using var s = await Start(Options());
