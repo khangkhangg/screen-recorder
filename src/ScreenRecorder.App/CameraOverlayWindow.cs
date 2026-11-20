@@ -40,7 +40,8 @@ public sealed class CameraOverlayWindow : Window
         redraw = DispatcherQueue.CreateTimer();
         redraw.Interval = TimeSpan.FromMilliseconds(33);
         redraw.Tick += (_, _) => canvas.Invalidate();
-        Closed += (_, _) => { redraw.Stop(); CloseCamera(); };
+        // shown turns false so a camera that finishes opening after close is disposed
+        Closed += (_, _) => { shown = false; CloseCamera(); };
     }
 
     PixelSize Frame => new((int)area.Width, (int)area.Height);
@@ -54,7 +55,6 @@ public sealed class CameraOverlayWindow : Window
         if (shown) return;
         shown = true;
         AppWindow.Show(false);
-        redraw.Start();
         if (webcam is null && !opening) OpenCamera();
     }
 
@@ -62,7 +62,6 @@ public sealed class CameraOverlayWindow : Window
     {
         shown = pressed = false;
         AppWindow.Hide();
-        redraw.Stop();
         CloseCamera();
     }
 
@@ -85,6 +84,7 @@ public sealed class CameraOverlayWindow : Window
             CameraShape.RoundedSquare => NativeMethods.CreateRoundRectRgn(0, 0, side + 1, side + 1, corner, corner),
             _ => NativeMethods.CreateRectRgn(0, 0, side, side),
         }, true);
+        canvas.Invalidate();
     }
 
     async void OpenCamera()
@@ -98,6 +98,7 @@ public sealed class CameraOverlayWindow : Window
             var source = await WebcamSource.OpenAsync(cameras[0].Id, CanvasDevice.GetSharedDevice(), sharedReadOnly: true);
             if (!shown) { await source.DisposeAsync(); return; }
             webcam = source;
+            redraw.Start();
             source.Lost += () => DispatcherQueue.TryEnqueue(() => { if (webcam == source) CloseCamera(); });
         }
         catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the gray placeholder stays, so the user can still place it
@@ -108,6 +109,8 @@ public sealed class CameraOverlayWindow : Window
     {
         var source = webcam;
         webcam = null;
+        redraw.Stop();
+        canvas.Invalidate();
         if (source is not null) await source.DisposeAsync();
     }
 
@@ -136,6 +139,7 @@ public sealed class CameraOverlayWindow : Window
 
     void Pressed(object sender, PointerRoutedEventArgs e)
     {
+        if (!e.GetCurrentPoint(canvas).Properties.IsLeftButtonPressed) return;
         NativeMethods.GetCursorPos(out grab);
         grabRect = OnScreen;
         resizing = FromCenter(grabRect, grab) > grabRect.Width / 2 - Math.Max(8, grabRect.Width * 0.12f);
@@ -172,6 +176,7 @@ public sealed class CameraOverlayWindow : Window
 
     void Wheel(object sender, PointerRoutedEventArgs e)
     {
+        if (pressed) return; // the drag rebuilds from its grab rect, so a wheel change would be lost
         var r = OnScreen;
         float side = r.Width * MathF.Pow(1.1f, e.GetCurrentPoint(canvas).Properties.MouseWheelDelta / 120f);
         camera = OverlayMath.FromScreen(new RectF(r.X + (r.Width - side) / 2, r.Y + (r.Height - side) / 2, side, side), area, camera);

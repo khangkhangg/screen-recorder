@@ -15,12 +15,15 @@ public static class OverlayMath
     public static CameraItem FromScreen(RectF cameraOnScreen, RectF captureAreaOnScreen, CameraItem current)
     {
         var a = captureAreaOnScreen;
-        float size = Math.Clamp(cameraOnScreen.Height / a.Height, MinSize, MaxSize);
-        float maxX = Math.Max(0, 1 - size * a.Height / a.Width), maxY = 1 - size;
+        var r = cameraOnScreen;
+        // the side also fits the width, so a tall narrow area still holds the whole camera
+        float size = Math.Min(Math.Clamp(r.Height / a.Height, MinSize, MaxSize), a.Width / a.Height);
+        float half = size * a.Height / 2, maxX = Math.Max(0, 1 - size * a.Height / a.Width), maxY = 1 - size;
+        // position comes from the center, so a clamped size does not walk the camera across the area
         return current with
         {
-            X = Math.Clamp((cameraOnScreen.X - a.X) / a.Width, 0, maxX),
-            Y = Math.Clamp((cameraOnScreen.Y - a.Y) / a.Height, 0, maxY),
+            X = Math.Clamp((r.X + r.Width / 2 - half - a.X) / a.Width, 0, maxX),
+            Y = Math.Clamp((r.Y + r.Height / 2 - half - a.Y) / a.Height, 0, maxY),
             Size = size,
         };
     }

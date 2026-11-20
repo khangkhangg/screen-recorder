@@ -32,6 +32,25 @@ public class OverlayMathTests
     }
 
     [Theory]
+    [InlineData(1000, 0.6f)]
+    [InlineData(5, 0.1f)]
+    public void FromScreen_clamped_size_keeps_center(float side, float expected)
+    {
+        var c = OverlayMath.FromScreen(new RectF(580 - side / 2, 320 - side / 2, side, side), Area, Current);
+        Assert.Equal(expected, c.Size, 0.001f);
+        Assert.Equal(580, Area.X + c.X * Area.Width + c.Size * Area.Height / 2, 0.01f);
+        Assert.Equal(320, Area.Y + c.Y * Area.Height + c.Size * Area.Height / 2, 0.01f);
+    }
+
+    [Fact]
+    public void FromScreen_size_fits_a_narrow_area()
+    {
+        var c = OverlayMath.FromScreen(new RectF(0, 0, 1000, 1000), new RectF(0, 0, 400, 1080), Current);
+        Assert.Equal(400f / 1080, c.Size, 0.001f);
+        Assert.Equal(0, c.X);
+    }
+
+    [Theory]
     [InlineData(5, 0.1f)]
     [InlineData(1000, 0.6f)]
     public void FromScreen_limits_size(float side, float expected) =>
