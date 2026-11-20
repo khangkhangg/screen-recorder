@@ -8,6 +8,7 @@ public sealed class WavWriter : IDisposable
     const int Rate = 48000, Channels = 2, FrameBytes = Channels * 4, HeaderSize = 44;
     readonly FileStream _file;
     long _dataBytes, _headerBytes;
+    bool _disposed;
 
     public WavWriter(string path)
     {
@@ -23,6 +24,7 @@ public sealed class WavWriter : IDisposable
     }
 
     // Rewrites the sizes in place so a file cut off by a crash still opens.
+    // shortcut: size fields are 32-bit, so files overflow past 4 GB (about 3.1 hours), switch to RF64 when longer recordings are needed.
     void WriteHeader()
     {
         _file.Flush();
@@ -40,6 +42,8 @@ public sealed class WavWriter : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         WriteHeader();
         _file.Dispose();
     }

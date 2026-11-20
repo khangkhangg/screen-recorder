@@ -18,4 +18,7 @@
     <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ScreenRecorder.Capture.Tests" />
+  </ItemGroup>
 </Project>

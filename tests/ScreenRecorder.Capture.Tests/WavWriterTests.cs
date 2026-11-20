@@ -25,6 +25,14 @@ public class WavWriterTests
     }
 
     [Fact]
+    public void Wav_writer_can_be_disposed_twice()
+    {
+        var path = Path.GetTempFileName();
+        try { var w = new WavWriter(path); w.Dispose(); w.Dispose(); }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void Cut_off_wav_has_usable_header()
     {
         var path = Path.GetTempFileName();

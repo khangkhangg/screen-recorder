@@ -21,7 +21,7 @@ public sealed class AudioSource : IAsyncDisposable
     string _deviceId = "";
     readonly float[] _ring = new float[Capacity];
     readonly object _lock = new();
-    int _head, _count, _lost;
+    int _head, _count, _lost, _disposed;
 
     public event Action? Lost;
 
@@ -51,7 +51,7 @@ public sealed class AudioSource : IAsyncDisposable
         deviceId = string.IsNullOrEmpty(deviceId) ? MediaDevice.GetDefaultAudioCaptureId(AudioDeviceRole.Default) : deviceId;
         if (string.IsNullOrEmpty(deviceId))
             throw new InvalidOperationException("No microphone found on this PC.");
-        return await OpenAsync(deviceId, MediaCategory.Other, DeviceClass.AudioCapture);
+        return await OpenAsync(deviceId);
     }
 
     // The default output device's sound, through WASAPI loopback (AudioGraph cannot capture a render device).
@@ -111,7 +111,7 @@ public sealed class AudioSource : IAsyncDisposable
         src = new AudioSource(() =>
         {
             stop.Cancel();
-            thread.Join();
+            if (Thread.CurrentThread != thread) thread.Join();
             try { client.Stop(); } catch (Exception) { /* device may be gone */ }
             Release(capture, client, device, enumerator);
         });
@@ -124,7 +124,7 @@ public sealed class AudioSource : IAsyncDisposable
         foreach (var c in coms) if (c != null) Marshal.ReleaseComObject(c);
     }
 
-    static async Task<AudioSource> OpenAsync(string deviceId, MediaCategory category, DeviceClass deviceClass)
+    static async Task<AudioSource> OpenAsync(string deviceId)
     {
         var format = AudioEncodingProperties.CreatePcm(Rate, 2, 32);
         format.Subtype = MediaEncodingSubtypes.Float;
@@ -134,15 +134,16 @@ public sealed class AudioSource : IAsyncDisposable
         var graph = made.Graph;
         try
         {
-            var device = (await DeviceInformation.FindAllAsync(deviceClass == DeviceClass.AudioRender ? MediaDevice.GetAudioRenderSelector() : MediaDevice.GetAudioCaptureSelector())).First(d => d.Id == deviceId);
-            var input = await graph.CreateDeviceInputNodeAsync(category, graph.EncodingProperties, device);
+            var device = (await DeviceInformation.FindAllAsync(MediaDevice.GetAudioCaptureSelector())).FirstOrDefault(d => d.Id == deviceId)
+                ?? throw new InvalidOperationException("No microphone found on this PC.");
+            var input = await graph.CreateDeviceInputNodeAsync(MediaCategory.Other, graph.EncodingProperties, device);
             if (input.Status != AudioDeviceNodeCreationStatus.Success)
                 throw new InvalidOperationException(input.Status == AudioDeviceNodeCreationStatus.AccessDenied
                     ? "Microphone access is turned off in the Windows privacy settings."
                     : $"Windows could not open the sound device ({input.Status}).");
             var output = graph.CreateFrameOutputNode(format);
             input.DeviceInputNode.AddOutgoingConnection(output);
-            return new AudioSource(graph, output, DeviceInformation.CreateWatcher(deviceClass), deviceId);
+            return new AudioSource(graph, output, DeviceInformation.CreateWatcher(DeviceClass.AudioCapture), deviceId);
         }
         catch { graph.Dispose(); throw; }
     }
@@ -188,14 +189,15 @@ public sealed class AudioSource : IAsyncDisposable
         }
     }
 
-    void RaiseLost()
+    // Handlers run on the thread pool so one that disposes the source cannot wait on the thread that raised Lost.
+    internal void RaiseLost()
     {
-        if (Interlocked.Exchange(ref _lost, 1) == 0) Lost?.Invoke();
+        if (Interlocked.Exchange(ref _lost, 1) == 0) ThreadPool.QueueUserWorkItem(_ => Lost?.Invoke());
     }
 
     public ValueTask DisposeAsync()
     {
-        _close();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0) _close();
         return ValueTask.CompletedTask;
     }
 }
