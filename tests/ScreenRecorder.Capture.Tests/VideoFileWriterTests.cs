@@ -12,7 +12,8 @@ public class VideoFileWriterTests
 
     static string TempMp4() => Path.Combine(Path.GetTempPath(), $"vfw-{Guid.NewGuid():N}.mp4");
 
-    static void WriteSolidFrames(string path, int count, bool hardware, bool withAudio = false)
+    // Returns whether the writer used a hardware encoder.
+    static bool WriteSolidFrames(string path, int count, bool hardware, bool withAudio = false)
     {
         var device = CanvasDevice.GetSharedDevice();
         using var target = new CanvasRenderTarget(device, 1280, 720, 96);
@@ -23,13 +24,14 @@ public class VideoFileWriterTests
             writer.WriteFrame(target, i);
         }
         if (withAudio) writer.WriteAudio(new float[96_000 * 2], 0);
+        return writer.UsesHardwareEncoder;
     }
 
     [Fact]
     public void Writes_constant_60fps()
     {
         var path = TempMp4();
-        WriteSolidFrames(path, 120, Hardware);
+        Assert.Equal(Hardware, WriteSolidFrames(path, 120, Hardware));
         var info = MediaInfo.Read(path);
         Assert.Equal(120, info.FrameCount);
         Assert.InRange(info.Duration.TotalSeconds, 1.98, 2.02);
@@ -67,7 +69,14 @@ public class VideoFileWriterTests
     public void Software_encoder_works()
     {
         var path = TempMp4();
-        WriteSolidFrames(path, 30, hardware: false);
+        Assert.False(WriteSolidFrames(path, 30, hardware: false));
         Assert.Equal(30, MediaInfo.Read(path).FrameCount);
+    }
+
+    [Fact]
+    public void Audio_on_a_video_only_writer_throws()
+    {
+        using var writer = new VideoFileWriter(TempMp4(), new PixelSize(1280, 720), 60, CanvasDevice.GetSharedDevice(), false, false);
+        Assert.Throws<InvalidOperationException>(() => writer.WriteAudio(new float[2], 0));
     }
 }

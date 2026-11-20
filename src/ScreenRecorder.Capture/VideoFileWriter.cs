@@ -15,6 +15,7 @@ public sealed class VideoFileWriter : IDisposable
 {
     const int AudioRate = 48000;
     const long TicksPerSecond = 10_000_000;
+    const int SinkNoSamplesProcessed = unchecked((int)0xC00D4A44);
 
     readonly ID3D11Device _device;
     readonly ID3D11DeviceContext _context;
@@ -72,20 +73,49 @@ public sealed class VideoFileWriter : IDisposable
                 _writer.SetInputMediaType(_audioStream, input, null);
             }
             _writer.BeginWriting();
+            UsesHardwareEncoder = HardwareEncoderLoaded();
+            // The software encoder reads every frame back to the CPU, so the caller must choose it on purpose.
+            if (hardware && !UsesHardwareEncoder)
+                throw new NotSupportedException("The hardware H.264 encoder did not load. Open the writer with hardware: false.");
         }
-        catch (SharpGenException e)
+        catch (Exception e)
         {
             _writer?.Dispose();
             _manager?.Dispose();
             _context.Dispose();
             _device.Dispose();
-            throw Translate(e);
+            _queue.Dispose();
+            if (_writer is not null) File.Delete(path);
+            if (e is SharpGenException s) throw Translate(s);
+            throw;
         }
         _thread = new Thread(Run) { IsBackground = true, Name = nameof(VideoFileWriter) };
         _thread.Start();
     }
 
     public long FramesBehind => Interlocked.Read(ref _behind);
+
+    public bool UsesHardwareEncoder { get; }
+
+    // Hardware MFTs set MFT_ENUM_HARDWARE_URL_Attribute, and software ones do not.
+    bool HardwareEncoderLoaded()
+    {
+        using var writerEx = _writer.QueryInterface<IMFSinkWriterEx>();
+        for (int i = 0; ; i++)
+        {
+            Guid category;
+            IMFTransform transform;
+            try { writerEx.GetTransformForStream(_videoStream, i, out category, out transform); }
+            catch (SharpGenException) { return false; }
+            using (transform)
+            {
+                if (category != TransformCategoryGuids.VideoEncoder) continue;
+                using var attributes = transform.Attributes;
+                try { return attributes.GetAllocatedString(TransformAttributeKeys.MftEnumHardwareUrlAttribute).Length > 0; }
+                catch (SharpGenException) { return false; }
+            }
+        }
+    }
 
     // Copies the frame on the GPU, because the caller draws the next frame into the same render target.
     public void WriteFrame(IDirect3DSurface surface, long frameIndex)
@@ -105,6 +135,7 @@ public sealed class VideoFileWriter : IDisposable
     public void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex)
     {
         ThrowIfFailed();
+        if (_audioStream < 0) throw new InvalidOperationException("This writer was opened without audio.");
         // The AAC encoder takes 16-bit PCM only.
         var pcm = new short[interleavedStereo48k.Length];
         for (int i = 0; i < pcm.Length; i++) pcm[i] = (short)Math.Clamp(interleavedStereo48k[i] * 32767f, -32768f, 32767f);
@@ -186,7 +217,9 @@ public sealed class VideoFileWriter : IDisposable
         {
             if (_error is null) _writer.Finalize();
         }
-        catch (SharpGenException e) { _error = Translate(e); }
+        // A writer closed before its first sample has nothing to finalize.
+        catch (SharpGenException e) when (e.HResult != SinkNoSamplesProcessed) { _error = Translate(e); }
+        catch (SharpGenException) { }
         finally
         {
             _writer.Dispose();
