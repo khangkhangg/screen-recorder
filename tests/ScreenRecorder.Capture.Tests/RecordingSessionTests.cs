@@ -155,13 +155,29 @@ public class RecordingSessionTests
     public async Task Slow_final_encoder_drops_final_frames_only()
     {
         var f = new TestFactory { Wrap = (name, w) => name == "final.mp4" ? new FakeWriter(w, behind: 100) : w };
-        await using var s = await Start(Options(), f);
+        // A 1920x1080 region keeps 60 frames per second, which the frame count below assumes.
+        var region = new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 1920, 1080);
+        await using var s = await Start(Options() with { Target = region }, f);
         await Task.Delay(2000);
         var result = await s.StopAsync();
         Assert.True(result.DroppedFrames > 0);
         var screen = MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4")).FrameCount;
         Assert.InRange(screen, 110, 125);
         Assert.Equal(screen, MediaInfo.Read(Path.Combine(result.Folder, "final.mp4")).FrameCount);
+    }
+
+    [Fact]
+    public async Task Large_frame_is_capped_at_30()
+    {
+        var f = new TestFactory { Screen = () => new FakeScreen { SourceSize = new PixelSize(3840, 2160) } };
+        Assert.Equal(30, (await RecordingSession.PreflightAsync(Options(), f)).FrameRate);
+    }
+
+    [Fact]
+    public async Task Normal_frame_keeps_60()
+    {
+        var f = new TestFactory { Screen = () => new FakeScreen() };
+        Assert.Equal(60, (await RecordingSession.PreflightAsync(Options(), f)).FrameRate);
     }
 
     sealed class TestFactory : ISourceFactory

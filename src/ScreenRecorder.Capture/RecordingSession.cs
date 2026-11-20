@@ -11,12 +11,12 @@ public record RecordingOptions(CaptureTarget Target, string OutputRoot, int Fram
 
 public record RecordingResult(string Folder, long DroppedFrames, IReadOnlyList<string> Notes);
 
-public record PreflightResult(EncoderSupport Encoders, PixelSize FrameSize, bool ScaledDown, bool LooksBlack);
+public record PreflightResult(EncoderSupport Encoders, PixelSize FrameSize, bool ScaledDown, bool LooksBlack, int FrameRate);
 
 // One recording thread draws and writes every file from one RecordingClock, so all files share frame and sample indexes.
 public sealed class RecordingSession : IAsyncDisposable
 {
-    const int AudioRate = 48_000, CameraRate = 30, SoftwareRate = 30, FinalMaxBehind = 30, MaxBehind = 60;
+    const int LargeFrame = 2560 * 1440, AudioRate = 48_000, CameraRate = 30, SoftwareRate = 30, FinalMaxBehind = 30, MaxBehind = 60;
     // The mix trails the clock by 100 ms, so a sound packet that arrives a little late is not replaced by silence.
     const long AudioLag = AudioRate / 10;
 
@@ -30,6 +30,7 @@ public sealed class RecordingSession : IAsyncDisposable
 
     readonly RecordingOptions _o;
     readonly PixelSize _size;
+    readonly int _frameRate;
     readonly DateTimeOffset _startedAt = DateTimeOffset.Now;
     readonly string _folder;
     readonly object _gate = new();
@@ -55,10 +56,11 @@ public sealed class RecordingSession : IAsyncDisposable
 
     public event Action<RecordingResult>? StoppedByItself;
 
-    RecordingSession(RecordingOptions o, PixelSize size)
+    RecordingSession(RecordingOptions o, PreflightResult p)
     {
         _o = o;
-        _size = size;
+        _size = p.FrameSize;
+        _frameRate = p.FrameRate;
         _layout = o.Layout;
         _folder = Path.Combine(o.OutputRoot, _startedAt.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture));
     }
@@ -73,14 +75,17 @@ public sealed class RecordingSession : IAsyncDisposable
         CanvasBitmap? frame = null;
         for (int i = 0; i < 100 && !screen.TryGetLatestFrame(out frame); i++) await Task.Delay(20);
         var size = FrameMath.FitWithin(screen.SourceSize, max);
-        return new(encoders, size, size != FrameMath.ToEven(screen.SourceSize), frame is null || ScreenSource.LooksBlack(frame));
+        // The encoders keep up with 4K at 30 frames per second and 1080p at 60.
+        int rate = encoders == EncoderSupport.SoftwareOnly ? SoftwareRate
+            : (long)size.Width * size.Height > LargeFrame ? Math.Min(o.FrameRate, 30) : o.FrameRate;
+        return new(encoders, size, size != FrameMath.ToEven(screen.SourceSize), frame is null || ScreenSource.LooksBlack(frame), rate);
     }
 
     public static Task<RecordingSession> StartAsync(RecordingOptions o, PreflightResult p) => StartAsync(o, p, SourceFactory.Instance);
 
     internal static async Task<RecordingSession> StartAsync(RecordingOptions o, PreflightResult p, ISourceFactory f)
     {
-        var s = new RecordingSession(o, p.FrameSize);
+        var s = new RecordingSession(o, p);
         try { await s.OpenAsync(f, p.Encoders); }
         catch { s.DisposeAll(); throw; }
         s._clock.Start();
@@ -194,7 +199,7 @@ public sealed class RecordingSession : IAsyncDisposable
 
     void OpenWriters(ISourceFactory f, CanvasDevice device, bool hardware)
     {
-        _rate = hardware ? _o.FrameRate : SoftwareRate;
+        _rate = hardware ? _frameRate : SoftwareRate;
         _screenW = f.OpenWriter(Path.Combine(_folder, "screen.mp4"), _size, _rate, device, hardware, false);
         if (_o.WriteFinal) _finalW = f.OpenWriter(Path.Combine(_folder, "final.mp4"), _size, _rate, device, hardware, _tracks.Count > 0);
         if (_cam != null)
