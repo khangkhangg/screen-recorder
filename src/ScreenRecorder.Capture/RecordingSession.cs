@@ -62,7 +62,11 @@ public sealed class RecordingSession : IAsyncDisposable
         _size = p.FrameSize;
         _frameRate = p.FrameRate;
         _layout = o.Layout;
-        _folder = Path.Combine(o.OutputRoot, _startedAt.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture));
+        var name = Path.Combine(o.OutputRoot, _startedAt.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture));
+        _folder = name;
+        // Two recordings started in the same second get "name (2)", "name (3)" and so on.
+        for (int n = 2; Directory.Exists(_folder); n++) _folder = $"{name} ({n})";
+        Directory.CreateDirectory(_folder);
     }
 
     public static Task<PreflightResult> PreflightAsync(RecordingOptions o) => PreflightAsync(o, SourceFactory.Instance);
@@ -87,7 +91,13 @@ public sealed class RecordingSession : IAsyncDisposable
     {
         var s = new RecordingSession(o, p);
         try { await s.OpenAsync(f, p.Encoders); }
-        catch { s.DisposeAll(); throw; }
+        catch
+        {
+            s.DisposeAll();
+            // The cleanup must not hide the error that stopped the start.
+            try { Directory.Delete(s._folder, true); } catch (Exception) { }
+            throw;
+        }
         s._clock.Start();
         new Thread(s.Run) { IsBackground = true, Name = "Recording" }.Start();
         return s;
@@ -140,7 +150,6 @@ public sealed class RecordingSession : IAsyncDisposable
 
     async Task OpenAsync(ISourceFactory f, EncoderSupport encoders)
     {
-        Directory.CreateDirectory(_folder);
         var device = CanvasDevice.GetSharedDevice();
         _screen = f.OpenScreen(_o.Target, device);
         _screen.Closed += () =>
@@ -245,23 +254,29 @@ public sealed class RecordingSession : IAsyncDisposable
             self = !_stopRequested;
             _diskNoted |= e is IOException;
             Note(e is IOException ? $"disk error, recording stopped: {e.Message}" : $"recording stopped: {e.Message}");
+            // Sound trails the video by up to 100 ms, so flush it to the stop time.
+            _clock.Pause();
+            if (_tracks.Count > 0) Quietly(() => WriteSound(true));
         }
-
-        lock (_gate) _ended = true;
-        Quietly(() =>
+        finally
         {
-            if (_finalW != null && _lastFinal != null)
-                for (; _finalNext < _written; _finalNext++) _finalW.WriteFrame(_lastFinal, _finalNext);
-        });
-        DisposeAll();
-        RecordingResult result;
-        lock (_gate)
-        {
-            result = new(_folder, _dropped, [.. _notes]);
-            WriteSession();
+            // Runs even if a note fails, so the files are always closed and StopAsync always returns.
+            lock (_gate) _ended = true;
+            Quietly(() =>
+            {
+                if (_finalW != null && _lastFinal != null)
+                    for (; _finalNext < _written; _finalNext++) _finalW.WriteFrame(_lastFinal, _finalNext);
+            });
+            DisposeAll();
+            RecordingResult result;
+            lock (_gate)
+            {
+                result = new(_folder, _dropped, [.. _notes]);
+                WriteSession();
+            }
+            _done.TrySetResult(result);
+            if (self) ThreadPool.QueueUserWorkItem(_ => StoppedByItself?.Invoke(result));
         }
-        _done.SetResult(result);
-        if (self) ThreadPool.QueueUserWorkItem(_ => StoppedByItself?.Invoke(result));
     }
 
     void Tick(bool flush)
@@ -381,7 +396,8 @@ public sealed class RecordingSession : IAsyncDisposable
             File.WriteAllText(path + ".tmp", SessionJson.Serialize(file));
             File.Move(path + ".tmp", path, true);
         }
-        catch (IOException) { } // The writers report a full disk, and the last good session.json stays in place.
+        // A full disk, or another program holding the file open, leaves the last good session.json in place.
+        catch (Exception) { }
     }
 
     // Every writer and source is closed, even when another one fails, so each file keeps what it has written.

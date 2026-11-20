@@ -180,6 +180,54 @@ public class RecordingSessionTests
         Assert.Equal(60, (await RecordingSession.PreflightAsync(Options(), f)).FrameRate);
     }
 
+    [Fact]
+    public async Task Session_json_held_open_breaks_nothing()
+    {
+        var o = Options();
+        await using var s = await Start(o, new TestFactory { Screen = () => new FakeScreen() });
+        var folder = Directory.GetDirectories(o.OutputRoot).Single();
+        await Task.Delay(500);
+        using (new FileStream(Path.Combine(folder, "session.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            s.Pause();
+            s.Resume();
+            await Task.Delay(500);
+        }
+        await s.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(MediaInfo.Read(Path.Combine(folder, "screen.mp4")).FrameCount > 0);
+    }
+
+    [Fact]
+    public async Task Failed_start_removes_its_folder()
+    {
+        var o = Options();
+        var f = new TestFactory { Screen = () => new FakeScreen(), Wrap = (name, w) => name == "final.mp4" ? Fail(w) : w };
+        var p = await RecordingSession.PreflightAsync(o, f);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => RecordingSession.StartAsync(o, p, f));
+        Assert.Empty(Directory.GetDirectories(o.OutputRoot));
+    }
+
+    static IVideoWriter Fail(IVideoWriter w)
+    {
+        w.Dispose();
+        throw new InvalidOperationException("The writer could not open.");
+    }
+
+    [Fact]
+    public async Task Same_second_starts_get_separate_folders()
+    {
+        var o = Options();
+        var f = new TestFactory { Screen = () => new FakeScreen() };
+        var p = await RecordingSession.PreflightAsync(o, f);
+        // Folders for the next 3 seconds already exist, so the session has to add " (2)".
+        for (int i = 0; i < 3; i++)
+            Directory.CreateDirectory(Path.Combine(o.OutputRoot, DateTimeOffset.Now.AddSeconds(i).ToString("yyyy-MM-dd HH-mm-ss")));
+        await using var s = await RecordingSession.StartAsync(o, p, f);
+        var folder = (await s.StopAsync()).Folder;
+        Assert.EndsWith(" (2)", folder);
+        Assert.True(File.Exists(Path.Combine(folder, "session.json")));
+    }
+
     sealed class TestFactory : ISourceFactory
     {
         public Func<IScreenSource>? Screen;
