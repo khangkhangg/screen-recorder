@@ -1,0 +1,17 @@
+<Window
+    x:Class="ScreenRecorder.App.RegionSelectWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Select a region">
+    <UserControl x:Name="Root" IsTabStop="True" Background="Black"
+                 AutomationProperties.Name="Drag to select a region, press Escape to cancel"
+                 PointerPressed="Root_PointerPressed" PointerMoved="Root_PointerMoved"
+                 PointerReleased="Root_PointerReleased" KeyDown="Root_KeyDown">
+        <Canvas>
+            <Rectangle x:Name="Selection" Visibility="Collapsed" Stroke="White" StrokeThickness="2" Fill="#40FFFFFF" />
+            <Border x:Name="SizeLabel" Visibility="Collapsed" Background="White" CornerRadius="4" Padding="6,2">
+                <TextBlock x:Name="SizeText" Foreground="Black" />
+            </Border>
+        </Canvas>
+    </UserControl>
+</Window>
