@@ -1,4 +1,5 @@
 using ScreenRecorder.Capture;
+using ScreenRecorder.Core;
 
 namespace ScreenRecorder.App;
 
@@ -15,6 +16,15 @@ public static class TargetPicker
 
     public static bool IsPickable(string title, bool visible, bool minimized, bool cloaked, bool toolWindow, bool ownProcess) =>
         visible && !minimized && !cloaked && !toolWindow && !ownProcess && !string.IsNullOrWhiteSpace(title);
+
+    // Capture area in physical screen pixels, or null when its monitor or window is gone.
+    public static RectF? AreaOnScreen(CaptureTarget target, Func<nint, RectF?> monitorRect, Func<nint, RectF?> windowRect) => target switch
+    {
+        MonitorTarget m => monitorRect(m.Hmonitor),
+        RegionTarget r => monitorRect(r.Hmonitor) is { } b ? new RectF(b.X + r.X, b.Y + r.Y, r.Width, r.Height) : null,
+        WindowTarget w => windowRect(w.Hwnd),
+        _ => null,
+    };
 
     // Two drag points in window units (DIPs) on a window that covers the whole monitor.
     public static RegionTarget? ToRegion(nint hmonitor, double x1, double y1, double x2, double y2,

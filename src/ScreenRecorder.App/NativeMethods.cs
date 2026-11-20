@@ -1,11 +1,15 @@
 using System.Runtime.InteropServices;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using ScreenRecorder.Core;
+using Windows.Graphics;
 
 namespace ScreenRecorder.App;
 
 static class NativeMethods
 {
     const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
-    const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_LAYERED = 0x80000, DWMWA_CLOAKED = 14;
+    const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_LAYERED = 0x80000, WS_EX_NOACTIVATE = 0x08000000, DWMWA_CLOAKED = 14, DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     const uint MONITORINFOF_PRIMARY = 1, LWA_ALPHA = 2, WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 2, MB_ICONWARNING = 0x30;
 
     public struct Rect { public int Left, Top, Right, Bottom; }
@@ -38,6 +42,13 @@ static class NativeMethods
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint pid);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] static extern int DwmGetWindowRect(nint hwnd, int attribute, out Rect value, int size);
+    [DllImport("user32.dll")] static extern bool IsWindow(nint hwnd);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out PointInt32 point);
+    [DllImport("user32.dll")] public static extern int SetWindowRgn(nint hwnd, nint region, bool redraw);
+    [DllImport("gdi32.dll")] public static extern nint CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] public static extern nint CreateEllipticRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] public static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int width, int height);
 
     public static bool ExcludeFromCapture(nint hwnd) => SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
 
@@ -70,6 +81,34 @@ static class NativeMethods
             return true;
         }, 0);
         return list;
+    }
+
+    public static RectF? MonitorRect(nint hmonitor)
+    {
+        var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>() };
+        return GetMonitorInfoW(hmonitor, ref info) ? ToRectF(info.Monitor) : null;
+    }
+
+    // The frame bounds without the invisible resize border, which is what window capture records.
+    public static RectF? WindowRect(nint hwnd) =>
+        IsWindow(hwnd) && !IsIconic(hwnd) && DwmGetWindowRect(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out Rect r, Marshal.SizeOf<Rect>()) == 0
+            ? ToRectF(r) : null;
+
+    static RectF ToRectF(Rect r) => new(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+
+    // Borderless, on top, never focused, not in Alt+Tab, and hidden from capture.
+    public static nint MakeOverlay(Window window, string name)
+    {
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+        var presenter = OverlappedPresenter.Create();
+        presenter.SetBorderAndTitleBar(false, false);
+        presenter.IsResizable = presenter.IsMaximizable = presenter.IsMinimizable = false;
+        presenter.IsAlwaysOnTop = true;
+        window.AppWindow.SetPresenter(presenter);
+        window.AppWindow.IsShownInSwitchers = false;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+        if (!ExcludeFromCapture(hwnd)) System.Diagnostics.Debug.WriteLine($"{name} could not be excluded from capture");
+        return hwnd;
     }
 
     // Makes the whole window see-through, which is how the region picker dims the screen.

@@ -40,7 +40,8 @@ public sealed class WebcamSource : IWebcamSource
     public static async Task<IReadOnlyList<(string Id, string Name)>> ListAsync() =>
         (await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture)).Select(d => (d.Id, d.Name)).ToList();
 
-    public static async Task<WebcamSource> OpenAsync(string deviceId, CanvasDevice device)
+    // sharedReadOnly opens beside an exclusive owner and keeps the camera's current format.
+    public static async Task<WebcamSource> OpenAsync(string deviceId, CanvasDevice device, bool sharedReadOnly = false)
     {
         var access = DeviceAccessInformation.CreateFromDeviceClass(DeviceClass.VideoCapture).CurrentStatus;
         if (access is DeviceAccessStatus.DeniedByUser or DeviceAccessStatus.DeniedBySystem)
@@ -55,17 +56,17 @@ public sealed class WebcamSource : IWebcamSource
                 VideoDeviceId = deviceId,
                 StreamingCaptureMode = StreamingCaptureMode.Video,
                 MemoryPreference = MediaCaptureMemoryPreference.Cpu,
-                SharingMode = MediaCaptureSharingMode.ExclusiveControl,
+                SharingMode = sharedReadOnly ? MediaCaptureSharingMode.SharedReadOnly : MediaCaptureSharingMode.ExclusiveControl,
             });
             var colors = capture.FrameSources.Values.Where(s => s.Info.SourceKind == MediaFrameSourceKind.Color).ToList();
             var source = colors.FirstOrDefault(s => s.Info.MediaStreamType == MediaStreamType.VideoRecord) ?? colors.FirstOrDefault()
                 ?? throw new InvalidOperationException("This camera has no color video stream.");
-            var format = source.SupportedFormats
+            var format = sharedReadOnly ? source.CurrentFormat : source.SupportedFormats
                 .Where(f => f.VideoFormat is not null && f.FrameRate.Denominator != 0)
                 .OrderBy(f => Math.Abs((int)f.VideoFormat.Width - 1280) + Math.Abs((int)f.VideoFormat.Height - 720))
                 .ThenBy(f => Math.Abs((double)f.FrameRate.Numerator / f.FrameRate.Denominator - 30))
                 .FirstOrDefault() ?? throw new InvalidOperationException("This camera has no usable video mode.");
-            await source.SetFormatAsync(format);
+            if (!sharedReadOnly) await source.SetFormatAsync(format);
             var reader = await capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8);
             reader.AcquisitionMode = MediaFrameReaderAcquisitionMode.Realtime;
             webcam = new WebcamSource(capture, reader, device, new PixelSize((int)format.VideoFormat.Width, (int)format.VideoFormat.Height));

@@ -90,7 +90,7 @@ public sealed class Compositor : IDisposable
         ds.DrawImage(screen, new Rect(r.X, r.Y, r.Width, r.Height), screen.Bounds);
     }
 
-    static void DrawCamera(CanvasDrawingSession ds, CanvasBitmap camera, RectF r, CameraShape shape)
+    public static void DrawCamera(CanvasDrawingSession ds, CanvasBitmap camera, RectF r, CameraShape shape)
     {
         // DrawImage reads source rectangles in DIPs.
         float w = (float)camera.Size.Width, h = (float)camera.Size.Height, side = Math.Min(w, h);

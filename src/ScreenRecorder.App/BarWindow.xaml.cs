@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -55,7 +56,41 @@ public sealed partial class BarWindow : Window
         }).IsChecked = true;
         RemoveLogoItem.IsEnabled = settings.Layout.Logo.Path is not null;
 
-        Root.Loaded += (_, _) => PlaceWindow();
+        cameraOverlay = new CameraOverlayWindow();
+        logoOverlay = new LogoOverlayWindow();
+        cameraOverlay.Changed += c => Save(settings with { Layout = settings.Layout with { Camera = c } });
+        follow = DispatcherQueue.CreateTimer();
+        follow.Interval = TimeSpan.FromMilliseconds(100);
+        follow.Tick += (_, _) => FollowWindow();
+        Closed += (_, _) => { follow.Stop(); cameraOverlay.Close(); logoOverlay.Close(); };
+        Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
+    }
+
+    readonly CameraOverlayWindow cameraOverlay;
+    readonly LogoOverlayWindow logoOverlay;
+    readonly DispatcherQueueTimer follow;
+    RectF? overlayArea;
+
+    static RectF? AreaOf(CaptureTarget target) => TargetPicker.AreaOnScreen(target, NativeMethods.MonitorRect, NativeMethods.WindowRect);
+
+    void UpdateOverlays()
+    {
+        var layout = settings.Layout;
+        overlayArea = AreaOf(CurrentTarget);
+        if (overlayArea is { } a && layout.Camera.Visible) cameraOverlay.Show(a, layout); else cameraOverlay.Hide();
+        if (overlayArea is { } b && layout.Logo.Visible) logoOverlay.Show(b, layout); else logoOverlay.Hide();
+        // keeps running while a window target is minimized, so the overlays come back when it is restored
+        if (CurrentTarget is WindowTarget && (layout.Camera.Visible || layout.Logo.Visible)) follow.Start(); else follow.Stop();
+    }
+
+    void FollowWindow()
+    {
+        var area = AreaOf(CurrentTarget);
+        if (area == overlayArea) return;
+        if (area is null || overlayArea is null) { UpdateOverlays(); return; }
+        overlayArea = area;
+        cameraOverlay.MoveCaptureArea(area.Value);
+        logoOverlay.MoveCaptureArea(area.Value);
     }
 
     public void BringToFront()
@@ -120,8 +155,11 @@ public sealed partial class BarWindow : Window
         region.Click += async (_, _) =>
         {
             AppWindow.Hide();
+            // the overlays sit on top, so they would take the drag meant for the region picker
+            cameraOverlay.Hide();
+            logoOverlay.Hide();
             try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
-            finally { AppWindow.Show(); }
+            finally { AppWindow.Show(); UpdateOverlays(); }
         };
         TargetMenu.Items.Add(region);
     }
@@ -137,11 +175,13 @@ public sealed partial class BarWindow : Window
     {
         CurrentTarget = target;
         TargetText.Text = label;
+        UpdateOverlays();
     }
 
     void Save(Settings s)
     {
         settings = s;
+        UpdateOverlays();
         try { settings.Save(SettingsPath); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // the choice still holds for this run
     }

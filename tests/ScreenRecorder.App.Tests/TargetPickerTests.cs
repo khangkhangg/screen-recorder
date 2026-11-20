@@ -1,5 +1,6 @@
 using ScreenRecorder.App;
 using ScreenRecorder.Capture;
+using ScreenRecorder.Core;
 
 namespace ScreenRecorder.App.Tests;
 
@@ -28,6 +29,18 @@ public class TargetPickerTests
     [InlineData(10, 10, 100, 25)] // 15 pixels high
     public void Region_under_16_pixels_is_null(double x1, double y1, double x2, double y2) =>
         Assert.Null(TargetPicker.ToRegion(1, x1, y1, x2, y2, 1, 1920, 1080));
+
+    [Fact]
+    public void Area_on_screen_per_target()
+    {
+        RectF? Monitor(nint h) => h == 1 ? new RectF(-1920, 0, 1920, 1080) : null;
+        RectF? Window(nint h) => h == 5 ? new RectF(10, 20, 300, 200) : null;
+        Assert.Equal(new RectF(-1920, 0, 1920, 1080), TargetPicker.AreaOnScreen(new MonitorTarget(1), Monitor, Window));
+        Assert.Equal(new RectF(-1820, 50, 640, 480), TargetPicker.AreaOnScreen(new RegionTarget(1, 100, 50, 640, 480), Monitor, Window));
+        Assert.Equal(new RectF(10, 20, 300, 200), TargetPicker.AreaOnScreen(new WindowTarget(5), Monitor, Window));
+        Assert.Null(TargetPicker.AreaOnScreen(new WindowTarget(6), Monitor, Window));
+        Assert.Null(TargetPicker.AreaOnScreen(new RegionTarget(2, 0, 0, 16, 16), Monitor, Window));
+    }
 
     [Fact]
     public void Region_of_exactly_16_pixels_is_kept() =>
