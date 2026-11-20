@@ -133,7 +133,7 @@ static class NativeMethods
     public static bool AskYesCancel(nint hwnd, string text, string caption)
     {
         const int TDCBF_YES_BUTTON = 2, TDCBF_CANCEL_BUTTON = 8, IDYES = 6;
-        TaskDialog(hwnd, 0, caption, null, text, TDCBF_YES_BUTTON | TDCBF_CANCEL_BUTTON, -1, out var pressed); // -1 is TD_WARNING_ICON
+        TaskDialog(hwnd, 0, caption, null, text, TDCBF_YES_BUTTON | TDCBF_CANCEL_BUTTON, 0xFFFF, out var pressed); // MAKEINTRESOURCEW(-1), TD_WARNING_ICON
         return pressed == IDYES;
     }
 

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -66,12 +67,14 @@ public sealed partial class BarWindow : Window
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; hotkeys?.Dispose(); settingsWindow?.Close(); cameraOverlay.Close(); logoOverlay.Close(); };
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += async (_, e) =>
         {
-            if (session is null || busy) return;
+            // While starting or stopping, closing would leave a running session or an unfinished file.
+            if (busy) { e.Cancel = true; return; }
+            if (session is null) return;
             e.Cancel = true;
             await StopRecording();
             Close();
@@ -269,8 +272,18 @@ public sealed partial class BarWindow : Window
         ShowElapsed();
     }
 
-    static bool IsStartError(Exception e) =>
-        e is CaptureUnavailableException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException;
+    // Errors from starting or stopping a recording that the user should see instead of a crash.
+    public static bool IsRecordingError(Exception e) =>
+        e is CaptureUnavailableException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or COMException;
+
+    void Warn(string text, string caption)
+    {
+        // WM_HOTKEY still arrives inside the message box loop, so the busy flag keeps a hotkey from starting a recording there.
+        var wasBusy = busy;
+        busy = true;
+        NativeMethods.ShowWarning(hwnd, text, caption);
+        busy = wasBusy;
+    }
 
     void Fail(Exception e)
     {
@@ -282,6 +295,7 @@ public sealed partial class BarWindow : Window
     {
         RecordingOptions options;
         PreflightResult p;
+        settingsWindow?.Close(); // its changes would not reach a running recording
         busy = true;
         SetState(state);
         try
@@ -306,7 +320,7 @@ public sealed partial class BarWindow : Window
             showFps = p.FrameRate < options.FrameRate && p.Encoders != EncoderSupport.SoftwareOnly;
             FpsText.Text = $"{p.FrameRate} fps";
         }
-        catch (Exception e) when (IsStartError(e)) { Fail(e); return; }
+        catch (Exception e) when (IsRecordingError(e)) { Fail(e); return; }
         finally { busy = false; SetState(state); }
 
         SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
@@ -327,10 +341,11 @@ public sealed partial class BarWindow : Window
             var s = await RecordingSession.StartAsync(options, p);
             s.StoppedByItself += r => DispatcherQueue.TryEnqueue(() => StoppedByItself(s, r));
             session = s;
+            s.SetLayout(settings.Layout); // camera changes made during the countdown and the start
             ShowElapsed();
             clock.Start();
         }
-        catch (Exception e) when (IsStartError(e)) { Fail(e); }
+        catch (Exception e) when (IsRecordingError(e)) { Fail(e); }
         finally { busy = false; SetState(state); }
     }
 
@@ -346,10 +361,15 @@ public sealed partial class BarWindow : Window
             result = await s.StopAsync();
             await s.DisposeAsync();
         }
+        catch (Exception e) when (IsRecordingError(e))
+        {
+            Warn(e.Message, "Recording");
+            return;
+        }
         finally { session = null; busy = false; SetState(state); }
         var lines = result.Notes.Where(n => n.StartsWith("webcam lost") || n.StartsWith("mic lost") || n.StartsWith("system sound lost") || n.Contains("disk")).ToList();
         if (result.DroppedFrames > 0) lines.Insert(0, $"Dropped frames in the finished video: {result.DroppedFrames}");
-        if (lines.Count > 0) NativeMethods.ShowWarning(hwnd, string.Join("\n", lines), "Recording");
+        if (lines.Count > 0) Warn(string.Join("\n", lines), "Recording");
         System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\"");
     }
 
@@ -361,7 +381,7 @@ public sealed partial class BarWindow : Window
         clock.Stop();
         SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
         _ = s.DisposeAsync();
-        if (r.Notes.Count > 0) NativeMethods.ShowWarning(hwnd, r.Notes[^1], "Recording");
+        if (r.Notes.Count > 0) Warn(r.Notes[^1], "Recording");
     }
 
     void ShowElapsed()
@@ -409,8 +429,9 @@ public sealed partial class BarWindow : Window
     {
         if (settingsWindow is null)
         {
-            settingsWindow = new SettingsWindow(settings, hotkeysOk, ApplySettings);
-            settingsWindow.Closed += (_, _) => settingsWindow = null;
+            settingsWindow = new SettingsWindow(settings, hotkeysOk, ApplySettings, () => hotkeys?.Dispose());
+            // LostFocus may not fire when the window closes with a hotkey box focused.
+            settingsWindow.Closed += (_, _) => { settingsWindow = null; RegisterHotkeys(); };
         }
         settingsWindow.Activate();
     }

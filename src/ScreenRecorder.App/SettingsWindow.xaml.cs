@@ -19,11 +19,14 @@ public sealed partial class SettingsWindow : Window
     readonly List<string?> webcamIds = [null], micIds = [null];
     bool loading = true;
 
-    public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply)
+    readonly Action releaseHotkeys;
+
+    public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply, Action releaseHotkeys)
     {
         InitializeComponent();
         settings = current;
         this.apply = apply;
+        this.releaseHotkeys = releaseHotkeys;
         Root.Loaded += (_, _) =>
         {
             var scale = Root.XamlRoot.RasterizationScale;
@@ -45,6 +48,7 @@ public sealed partial class SettingsWindow : Window
             Fill(WebcamBox, webcamIds, await WebcamSource.ListAsync(), settings.WebcamId);
             Fill(MicBox, micIds, await AudioSource.ListMicsAsync(), settings.MicId);
         }
+        catch (Exception e) { Warn($"The device list could not be loaded. {e.Message}"); }
         finally { loading = false; }
     }
 
@@ -74,24 +78,40 @@ public sealed partial class SettingsWindow : Window
 
     async void Folder_Click(object sender, RoutedEventArgs e)
     {
-        if (await new FolderPicker(AppWindow.Id).PickSingleFolderAsync() is not { } folder) return;
-        FolderText.Text = folder.Path;
-        Save(settings with { OutputFolder = folder.Path });
+        try
+        {
+            if (await new FolderPicker(AppWindow.Id).PickSingleFolderAsync() is not { } folder) return;
+            FolderText.Text = folder.Path;
+            Save(settings with { OutputFolder = folder.Path });
+        }
+        catch (Exception ex) { Warn($"The folder could not be chosen. {ex.Message}"); }
+    }
+
+    void Warn(string text) => NativeMethods.ShowWarning(WinRT.Interop.WindowNative.GetWindowHandle(this), text, "Settings");
+
+    // While a hotkey box has focus the bar's hotkeys are released, so pressing the current one reaches the box.
+    void Hotkey_GotFocus(object sender, RoutedEventArgs e) => releaseHotkeys();
+
+    void Hotkey_LostFocus(object sender, RoutedEventArgs e) => ShowHotkeyErrors(apply(settings));
+
+    public static string? HotkeyText(int vk, bool ctrl, bool shift, bool alt, bool win)
+    {
+        var key = vk is >= 'A' and <= 'Z' or >= '0' and <= '9' ? ((char)vk).ToString() : vk is >= 0x70 and <= 0x7B ? $"F{vk - 0x6F}" : null;
+        return key is null ? null : string.Concat(ctrl ? "Ctrl+" : "", shift ? "Shift+" : "", alt ? "Alt+" : "", win ? "Win+" : "", key);
     }
 
     // Records the next key combination pressed. Modifier keys alone and Tab pass through.
     void Hotkey_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        var vk = (int)e.Key;
-        var key = vk is >= 'A' and <= 'Z' or >= '0' and <= '9' ? ((char)vk).ToString() : vk is >= 0x70 and <= 0x7B ? $"F{vk - 0x6F}" : null;
-        if (key is null) return;
+        var text = HotkeyText((int)e.Key, Down(VirtualKey.Control), Down(VirtualKey.Shift), Down(VirtualKey.Menu),
+            Down(VirtualKey.LeftWindows) || Down(VirtualKey.RightWindows));
+        if (text is null) return;
         e.Handled = true;
-        var text = string.Concat(Down(VirtualKey.Control) ? "Ctrl+" : "", Down(VirtualKey.Shift) ? "Shift+" : "", Down(VirtualKey.Menu) ? "Alt+" : "",
-            Down(VirtualKey.LeftWindows) || Down(VirtualKey.RightWindows) ? "Win+" : "", key);
         if (!Hotkey.TryParse(text, out var h)) return;
         var box = (TextBox)sender;
         box.Text = h.ToString();
         Save(box == RecordHotkeyBox ? settings with { RecordHotkey = h } : settings with { ScreenshotHotkey = h });
+        releaseHotkeys(); // Save registered them again, and the box still has focus
     }
 
     static bool Down(VirtualKey k) => InputKeyboardSource.GetKeyStateForCurrentThread(k).HasFlag(CoreVirtualKeyStates.Down);
