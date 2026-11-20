@@ -39,7 +39,7 @@ static class NativeMethods
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint pid);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
 
-    public static void ExcludeFromCapture(nint hwnd) => SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    public static bool ExcludeFromCapture(nint hwnd) => SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
 
     // Monitor rectangles in physical pixels, primary first.
     public static List<(nint Hmonitor, Rect Bounds, bool Primary)> Monitors()

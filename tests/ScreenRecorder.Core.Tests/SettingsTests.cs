@@ -30,4 +30,15 @@ public class SettingsTests
         File.WriteAllText(path, "{}");
         Assert.Equivalent(Settings.Default, Settings.Load(path));
     }
+
+    [Fact]
+    public void Empty_layout_gives_default()
+    {
+        var path = Path.GetTempFileName();
+        Settings.Default.Save(path);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        json["layout"] = new System.Text.Json.Nodes.JsonObject();
+        File.WriteAllText(path, json.ToJsonString());
+        Assert.Equivalent(Settings.Default, Settings.Load(path));
+    }
 }

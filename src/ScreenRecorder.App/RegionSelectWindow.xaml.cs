@@ -24,7 +24,7 @@ public sealed partial class RegionSelectWindow : Window
         (this.hmonitor, this.done) = (hmonitor, done);
         (width, height) = (bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        NativeMethods.ExcludeFromCapture(hwnd);
+        if (!NativeMethods.ExcludeFromCapture(hwnd)) System.Diagnostics.Debug.WriteLine("Region picker could not be excluded from capture");
         NativeMethods.SetOpacity(hwnd, 110);
         AppWindow.IsShownInSwitchers = false;
         // full screen fills the monitor the window sits on, in that monitor's own scale
@@ -60,7 +60,9 @@ public sealed partial class RegionSelectWindow : Window
         Selection.Height = Math.Abs(b.Y - a.Y);
         Canvas.SetLeft(Selection, Math.Min(a.X, b.X));
         Canvas.SetTop(Selection, Math.Min(a.Y, b.Y));
-        SizeText.Text = $"{Math.Round(Selection.Width * Scale)} x {Math.Round(Selection.Height * Scale)}";
+        // same math as the saved region, so the label matches the result
+        SizeText.Text = TargetPicker.ToRegion(hmonitor, a.X, a.Y, b.X, b.Y, Scale, width, height) is { } r
+            ? $"{r.Width} x {r.Height}" : "Too small";
         Canvas.SetLeft(SizeLabel, b.X + 12);
         Canvas.SetTop(SizeLabel, b.Y + 12);
         Selection.Visibility = SizeLabel.Visibility = Visibility.Visible;

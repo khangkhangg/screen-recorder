@@ -17,7 +17,7 @@ public record Settings(string OutputFolder, Hotkey RecordHotkey, Hotkey Screensh
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), SessionJson.Options);
             // missing fields deserialize to null or 0, which the app cannot use
             return s is null || s.FrameRate <= 0 || s.OutputFolder is null || s.RecordHotkey is null
-                || s.ScreenshotHotkey is null || s.Layout is null ? Default : s;
+                || s.ScreenshotHotkey is null || s.Layout?.Camera is null || s.Layout.Logo is null ? Default : s;
         }
         catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { return Default; }
     }

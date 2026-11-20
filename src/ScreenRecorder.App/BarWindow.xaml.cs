@@ -27,7 +27,7 @@ public sealed partial class BarWindow : Window
     {
         InitializeComponent();
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        NativeMethods.ExcludeFromCapture(hwnd);
+        if (!NativeMethods.ExcludeFromCapture(hwnd)) System.Diagnostics.Debug.WriteLine("Bar could not be excluded from capture");
 
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(true, false);
@@ -120,9 +120,8 @@ public sealed partial class BarWindow : Window
         region.Click += async (_, _) =>
         {
             AppWindow.Hide();
-            var picked = await RegionSelectWindow.PickAsync();
-            AppWindow.Show();
-            if (picked is not null) SetTarget(picked, "Region");
+            try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
+            finally { AppWindow.Show(); }
         };
         TargetMenu.Items.Add(region);
     }
@@ -143,7 +142,8 @@ public sealed partial class BarWindow : Window
     void Save(Settings s)
     {
         settings = s;
-        settings.Save(SettingsPath);
+        try { settings.Save(SettingsPath); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // the choice still holds for this run
     }
 
     void CameraToggle_Click(object sender, RoutedEventArgs e) =>
@@ -158,7 +158,7 @@ public sealed partial class BarWindow : Window
 
     async void PickLogo_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new FileOpenPicker(AppWindow.Id) { FileTypeFilter = { ".png", ".jpg" } };
+        var picker = new FileOpenPicker(AppWindow.Id) { FileTypeFilter = { ".png", ".jpg", ".jpeg" } };
         if (await picker.PickSingleFileAsync() is not { } file) return;
         Save(settings with { Layout = settings.Layout with { Logo = settings.Layout.Logo with { Visible = true, Path = file.Path } } });
         RemoveLogoItem.IsEnabled = true;
@@ -174,5 +174,9 @@ public sealed partial class BarWindow : Window
     {
         try { await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder); }
         catch (CaptureUnavailableException ex) { NativeMethods.ShowWarning(hwnd, ex.Message, "Screenshot"); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            NativeMethods.ShowWarning(hwnd, $"The screenshot could not be saved to {settings.OutputFolder}.", "Screenshot");
+        }
     }
 }
