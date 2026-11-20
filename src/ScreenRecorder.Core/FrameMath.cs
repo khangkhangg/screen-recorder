@@ -10,8 +10,13 @@ public static class FrameMath
 
     public static PixelSize FitWithin(PixelSize source, PixelSize max)
     {
-        var scale = Math.Min(1.0, Math.Min((double)max.Width / source.Width, (double)max.Height / source.Height));
-        return ToEven(new((int)(source.Width * scale), (int)(source.Height * scale)));
+        long w = source.Width, h = source.Height;
+        if (w > max.Width || h > max.Height)
+        {
+            if ((long)max.Width * h <= (long)max.Height * w) { h = h * max.Width / w; w = max.Width; }
+            else { w = w * max.Height / h; h = max.Height; }
+        }
+        return ToEven(new((int)w, (int)h));
     }
 
     public static RectF Letterbox(PixelSize source, PixelSize frame)

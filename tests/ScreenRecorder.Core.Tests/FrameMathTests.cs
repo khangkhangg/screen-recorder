@@ -10,6 +10,8 @@ public class FrameMathTests
     [Fact] public void FitWithin_scales_ultrawide_down() =>
         Assert.Equal(new PixelSize(4096, 1728), FrameMath.FitWithin(new PixelSize(5120, 2160), new PixelSize(4096, 2304)));
 
+    [Fact] public void FitWithin_exact_for_awkward_ratio() => Assert.Equal(new PixelSize(1720, 720), FrameMath.FitWithin(new PixelSize(3440, 1440), new PixelSize(1720, 2304)));
+
     [Fact] public void FitWithin_never_scales_up() =>
         Assert.Equal(new PixelSize(1280, 720), FrameMath.FitWithin(new PixelSize(1280, 720), new PixelSize(4096, 2304)));
 
