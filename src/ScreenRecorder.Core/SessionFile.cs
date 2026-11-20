@@ -13,7 +13,7 @@ public record SessionFile(int Version, DateTimeOffset StartedAt, PixelSize Frame
 
 public static class SessionJson
 {
-    static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    internal static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
