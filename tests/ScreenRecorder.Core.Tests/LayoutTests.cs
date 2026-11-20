@@ -28,4 +28,12 @@ public class LayoutTests
     public void LogoRect_bottom_right_keeps_proportions() =>
         Near(new RectF(1920 - 21.6f - 172.8f, 1080 - 21.6f - 86.4f, 172.8f, 86.4f),
             Layout.LogoRect(new LogoItem(true, Corner.BottomRight, 0.08f, "x.png"), new PixelSize(1920, 1080), new PixelSize(400, 200)));
+
+    [Fact]
+    public void CameraRect_larger_than_frame_does_not_throw() =>
+        Layout.CameraRect(new CameraItem(true, 0.1f, 0.1f, 0.9f, CameraShape.Square), new PixelSize(400, 1080));
+
+    [Fact]
+    public void LogoRect_wider_than_frame_does_not_throw() =>
+        Layout.LogoRect(new LogoItem(true, Corner.BottomRight, 0.08f, "x.png"), new PixelSize(200, 1080), new PixelSize(4000, 100));
 }

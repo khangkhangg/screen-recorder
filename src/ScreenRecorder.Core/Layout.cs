@@ -17,13 +17,13 @@ public record Layout(CameraItem Camera, LogoItem Logo)
     public static RectF CameraRect(CameraItem c, PixelSize frame)
     {
         float side = c.Size * frame.Height;
-        return new(Math.Clamp(c.X * frame.Width, 0, frame.Width - side), Math.Clamp(c.Y * frame.Height, 0, frame.Height - side), side, side);
+        return new(Math.Clamp(c.X * frame.Width, 0, Math.Max(0, frame.Width - side)), Math.Clamp(c.Y * frame.Height, 0, Math.Max(0, frame.Height - side)), side, side);
     }
 
     public static RectF LogoRect(LogoItem l, PixelSize frame, PixelSize logoPixels)
     {
         float h = l.Size * frame.Height, w = h * logoPixels.Width / logoPixels.Height, m = Margin * frame.Height;
         bool right = l.Corner is Corner.TopRight or Corner.BottomRight, bottom = l.Corner is Corner.BottomLeft or Corner.BottomRight;
-        return new(Math.Clamp(right ? frame.Width - m - w : m, 0, frame.Width - w), Math.Clamp(bottom ? frame.Height - m - h : m, 0, frame.Height - h), w, h);
+        return new(Math.Clamp(right ? frame.Width - m - w : m, 0, Math.Max(0, frame.Width - w)), Math.Clamp(bottom ? frame.Height - m - h : m, 0, Math.Max(0, frame.Height - h)), w, h);
     }
 }
