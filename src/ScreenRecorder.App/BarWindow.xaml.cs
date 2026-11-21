@@ -74,7 +74,7 @@ public sealed partial class BarWindow : Window
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); };
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); outline.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += (_, e) =>
@@ -92,6 +92,7 @@ public sealed partial class BarWindow : Window
 
     readonly CameraOverlayWindow cameraOverlay;
     readonly LogoOverlayWindow logoOverlay;
+    readonly RegionOutlineWindow outline = new();
     readonly DispatcherQueueTimer follow, confirm;
     string sourceLabel = "Desktop";
     string? lastShot;
@@ -107,6 +108,16 @@ public sealed partial class BarWindow : Window
         if (overlayArea is { } b && layout.Logo.Visible) logoOverlay.Show(b, layout); else logoOverlay.Hide();
         // keeps running while a window target is minimized, so the overlays come back when it is restored
         if (CurrentTarget is WindowTarget && (layout.Camera.Visible || layout.Logo.Visible)) follow.Start(); else follow.Stop();
+        ShowOutline();
+    }
+
+    // Marks the chosen region: accent with its size while idle, red without it from the countdown on.
+    void ShowOutline()
+    {
+        if (CurrentTarget is RegionTarget r && AreaOf(r) is { } a)
+            outline.Show(r.Hmonitor, new((int)a.X, (int)a.Y, (int)a.Width, (int)a.Height), state != RecorderState.Idle,
+                state == RecorderState.Idle ? $"{r.Width} x {r.Height}" : null);
+        else outline.Hide();
     }
 
     void FollowWindow()
@@ -179,6 +190,7 @@ public sealed partial class BarWindow : Window
         // the overlays sit on top, so they would take the drag meant for the region picker
         cameraOverlay.Hide();
         logoOverlay.Hide();
+        outline.Hide();
         try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
         finally { AppWindow.Show(); UpdateOverlays(); }
     }
@@ -371,6 +383,7 @@ public sealed partial class BarWindow : Window
         AutomationProperties.SetName(PauseButton, pauseName);
         DesktopSegment.IsEnabled = WindowSegment.IsEnabled = RegionSegment.IsEnabled = MoreButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
         if (Root.XamlRoot is not null) FitSize();
+        ShowOutline();
     }
 
     GlobalHotkeys? hotkeys;
