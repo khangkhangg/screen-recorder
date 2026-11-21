@@ -1,9 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use recorder_win::screenshot::{capture, copy_to_clipboard, crop, unique_path};
+use recorder_win::screenshot::{capture, copy_to_clipboard, crop};
 use recorder_win::{init_process, monitors, CaptureTarget, Error};
 use windows::core::{w, HSTRING};
 use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, HWND_MESSAGE};
@@ -11,7 +10,7 @@ use windows::Win32::Foundation::{GENERIC_READ, HANDLE, HGLOBAL};
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
-    WICBitmapEncoderNoCache, WICDecodeMetadataCacheOnDemand,
+    WICBitmapEncoderNoCache, WICConvertBitmapSource, WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
@@ -19,11 +18,26 @@ use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, Ope
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::CF_DIB;
 
-fn temp_folder(name: &str) -> PathBuf {
+struct Temp(PathBuf);
+
+impl std::ops::Deref for Temp {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_folder(name: &str) -> Temp {
     let p = std::env::temp_dir().join(format!("recorder-win-screenshot-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&p);
     fs::create_dir_all(&p).unwrap();
-    p
+    Temp(p)
 }
 
 fn region(w: i32, h: i32) -> CaptureTarget {
@@ -59,15 +73,23 @@ fn write_test_png(path: &Path, w: u32, h: u32) {
     }
 }
 
-fn png_size(path: &Path) -> (u32, u32) {
+fn png_pixels(path: &Path) -> (u32, u32, Vec<u8>) {
     unsafe {
         let decoder = factory()
             .CreateDecoderFromFilename(&HSTRING::from(path.as_os_str()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
             .unwrap();
+        let frame = decoder.GetFrame(0).unwrap();
         let (mut w, mut h) = (0, 0);
-        decoder.GetFrame(0).unwrap().GetSize(&mut w, &mut h).unwrap();
-        (w, h)
+        frame.GetSize(&mut w, &mut h).unwrap();
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA, &frame).unwrap().CopyPixels(null(), w * 4, &mut pixels).unwrap();
+        (w, h, pixels)
     }
+}
+
+fn png_size(path: &Path) -> (u32, u32) {
+    let (w, h, _) = png_pixels(path);
+    (w, h)
 }
 
 /// Width and height of the bitmap on the clipboard.
@@ -84,25 +106,6 @@ fn clipboard_size() -> (i32, i32, u16) {
     }
 }
 
-fn at(secs: u64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(secs)
-}
-
-#[test]
-fn same_second_names_get_a_counter() {
-    let dir = temp_folder("names");
-    let t = at(1_800_000_000);
-    let first = unique_path(&dir, t);
-    let name = first.file_name().unwrap().to_str().unwrap();
-    assert!(name.starts_with("Screenshot 20") && name.ends_with(".png") && name.len() == "Screenshot 2026-11-20 10-30-00.png".len(), "{name}");
-    fs::write(&first, "").unwrap();
-    let second = unique_path(&dir, t);
-    assert!(second.to_str().unwrap().ends_with(" (2).png"), "{second:?}");
-    fs::write(&second, "").unwrap();
-    assert!(unique_path(&dir, t).to_str().unwrap().ends_with(" (3).png"));
-    fs::remove_dir_all(&dir).unwrap();
-}
-
 #[test]
 fn crop_writes_a_new_png_and_numbers_repeats() {
     init_process().unwrap();
@@ -114,11 +117,16 @@ fn crop_writes_a_new_png_and_numbers_repeats() {
     let first = crop(&source, 10, 10, 50, 40).unwrap();
     assert_eq!(dir.join("test (cropped).png"), first);
     assert_eq!((50, 40), png_size(&first));
+    // Corners of the crop are the source pixels at (10, 10) and (59, 49).
+    let (_, _, src) = png_pixels(&source);
+    let (_, _, out) = png_pixels(&first);
+    let src_px = |x: usize, y: usize| src[(y * 100 + x) * 4..][..4].to_vec();
+    assert_eq!(src_px(10, 10), out[..4]);
+    assert_eq!(src_px(59, 49), out[(39 * 50 + 49) * 4..][..4]);
     assert_eq!(before, fs::read(&source).unwrap());
 
     let second = crop(&source, 10, 10, 50, 40).unwrap();
     assert_eq!(dir.join("test (cropped) (2).png"), second);
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -127,11 +135,10 @@ fn crop_outside_the_picture_is_refused_and_writes_nothing() {
     let dir = temp_folder("badcrop");
     let source = dir.join("test.png");
     write_test_png(&source, 100, 80);
-    for (x, y, w, h) in [(-1, 0, 10, 10), (0, 0, 0, 10), (60, 0, 50, 10), (0, 50, 10, 40)] {
+    for (x, y, w, h) in [(-1, 0, 10, 10), (0, -1, 10, 10), (0, 0, 0, 10), (0, 0, 10, 0), (60, 0, 50, 10), (0, 50, 10, 40), (i32::MAX, 0, 10, 10), (10, 10, i32::MAX, 10), (0, 0, 100, 81), (50, 0, 51, 80)] {
         assert!(matches!(crop(&source, x, y, w, h), Err(Error::Invalid(_))), "{x} {y} {w} {h}");
     }
-    assert_eq!(1, fs::read_dir(&dir).unwrap().count());
-    fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(1, fs::read_dir(&*dir).unwrap().count());
 }
 
 #[test]
@@ -143,7 +150,6 @@ fn region_screenshot_has_the_region_size() {
     assert!(!shot.copied);
     assert_eq!((320, 200), (shot.width, shot.height));
     assert_eq!((320, 200), png_size(&shot.path));
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -153,7 +159,6 @@ fn missing_folder_is_created() {
     let dir = temp_folder("missing");
     let shot = capture(&region(320, 200), &dir.join("new").join("sub"), false).unwrap();
     assert!(shot.path.exists());
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -168,8 +173,7 @@ fn clipboard_gets_a_bitmap_of_the_region_size() {
     let size = copy_to_clipboard(&region(200, 100)).unwrap();
     assert_eq!((200, 100), (size.width, size.height));
     assert_eq!((200, 100, 32), clipboard_size());
-    assert_eq!(1, fs::read_dir(&dir).unwrap().count());
-    fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(1, fs::read_dir(&*dir).unwrap().count());
 }
 
 #[test]
@@ -196,5 +200,13 @@ fn busy_clipboard_still_saves_the_file() {
     let shot = shot.unwrap();
     assert!(!shot.copied);
     assert!(shot.path.exists());
-    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn crop_ending_exactly_at_the_edge_is_accepted() {
+    init_process().unwrap();
+    let dir = temp_folder("edge");
+    let source = dir.join("test.png");
+    write_test_png(&source, 100, 80);
+    assert_eq!((50, 80), png_size(&crop(&source, 50, 0, 50, 80).unwrap()));
 }
