@@ -19,7 +19,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
     MF_MT_SUBTYPE, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_E_BUFFERTOOSMALL, MF_MT_DEFAULT_STRIDE,
-    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_E_INVALIDMEDIATYPE,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 
@@ -276,8 +276,18 @@ fn output_format(reader: &IMFSourceReader, stream: u32) -> windows::core::Result
     let output = unsafe { reader.GetCurrentMediaType(stream) }?;
     let size = frame_size(&output).ok_or_else(windows::core::Error::empty)?;
     // The attribute holds a signed stride in a u32. Without it, RGB32 rows are packed and top-down.
-    let stride = unsafe { output.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.map_or(size.width * 4, |s| s as i32);
+    let reported = unsafe { output.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.ok();
+    let stride = stride(size, reported)
+        .ok_or_else(|| windows::core::Error::new(MF_E_INVALIDMEDIATYPE, "The camera reported an unusable frame size."))?;
     Ok(Format { size, stride })
+}
+
+/// `None` for a width or height of 0 or less, or a row too wide to count in bytes.
+fn stride(size: PixelSize, reported: Option<u32>) -> Option<i32> {
+    if size.width <= 0 || size.height <= 0 {
+        return None;
+    }
+    reported.map(|s| s as i32).or_else(|| size.width.checked_mul(4))
 }
 
 fn frame_size(mode: &IMFMediaType) -> Option<PixelSize> {
@@ -334,7 +344,7 @@ fn upload(pixels: &[u8], size: PixelSize, device: &Device) -> windows::core::Res
 /// A negative `stride` means `src` holds the rows bottom-up. Fails when `src` is too short.
 fn copy_rows(src: &[u8], stride: i32, width: usize, height: usize, out: &mut [u8]) -> std::result::Result<(), ()> {
     let (row, step) = (width * 4, stride.unsigned_abs() as usize);
-    if step < row || src.len() < step * height || out.len() < row * height {
+    if row == 0 || step < row || src.len() < step * height || out.len() < row * height {
         return Err(());
     }
     for (y, line) in out.chunks_exact_mut(row).take(height).enumerate() {
@@ -388,6 +398,21 @@ mod tests {
         let src = rows(8, false);
         assert_eq!(copy(&src[..15], 8), Err(()));
         assert_eq!(copy(&src[..15], -8), Err(()));
+    }
+
+    #[test]
+    fn zero_width_is_refused() {
+        assert_eq!(copy_rows(&rows(8, false), 8, 0, 2, &mut []), Err(()));
+    }
+
+    #[test]
+    fn unusable_sizes_have_no_stride() {
+        let p = |width, height| PixelSize { width, height };
+        assert_eq!(stride(p(640, 480), None), Some(2560));
+        assert_eq!(stride(p(640, 480), Some((-2560i32) as u32)), Some(-2560));
+        for size in [p(0, 480), p(640, 0), p(-640, 480), p(i32::MAX, 480)] {
+            assert_eq!(stride(size, None), None, "{size:?}");
+        }
     }
 
     #[test]
