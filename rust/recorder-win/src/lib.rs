@@ -1,9 +1,11 @@
 mod error;
 mod gfx;
+mod screen;
 mod targets;
 
 pub use error::{Error, Result};
 pub use gfx::Device;
+pub use screen::{looks_black, Frame, Screen, ScreenSource};
 pub use targets::{find_window, monitors, windows, CaptureTarget, MonitorInfo, WindowInfo};
 
 use ::windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL, MF_VERSION};
