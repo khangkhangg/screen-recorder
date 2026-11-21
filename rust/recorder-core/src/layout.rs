@@ -64,7 +64,7 @@ pub fn camera_rect(c: &CameraItem, frame: PixelSize) -> RectF {
 pub fn logo_rect(l: &LogoItem, frame: PixelSize, logo_pixels: PixelSize) -> RectF {
     let (fw, fh) = (frame.width as f32, frame.height as f32);
     let h = l.size * fh;
-    let w = h * logo_pixels.width as f32 / logo_pixels.height as f32;
+    let w = if logo_pixels.height > 0 { h * logo_pixels.width as f32 / logo_pixels.height as f32 } else { 0.0 };
     let m = MARGIN * fh;
     let right = matches!(l.corner, Corner::TopRight | Corner::BottomRight);
     let bottom = matches!(l.corner, Corner::BottomLeft | Corner::BottomRight);
@@ -118,13 +118,25 @@ mod tests {
         near(RectF { x: 1920.0 - 21.6 - 172.8, y: 1080.0 - 21.6 - 86.4, width: 172.8, height: 86.4 }, r);
     }
 
+    fn finite(r: RectF) -> bool {
+        [r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite())
+    }
+
+    #[test]
+    fn logo_rect_with_empty_logo_is_finite() {
+        assert!(finite(logo_rect(&logo(0.08), p(1920, 1080), p(0, 0))));
+        assert!(finite(logo_rect(&logo(0.08), p(0, 0), p(0, 0))));
+    }
+
     #[test]
     fn camera_rect_larger_than_frame_does_not_panic() {
-        camera_rect(&cam(0.1, 0.1, 0.9, CameraShape::Square), p(400, 1080));
+        let r = camera_rect(&cam(0.1, 0.1, 0.9, CameraShape::Square), p(400, 1080));
+        assert!(r.x >= 0.0 && r.y >= 0.0 && r.x <= 400.0 && r.y <= 1080.0);
     }
 
     #[test]
     fn logo_rect_wider_than_frame_does_not_panic() {
-        logo_rect(&logo(0.08), p(200, 1080), p(4000, 100));
+        let r = logo_rect(&logo(0.08), p(200, 1080), p(4000, 100));
+        assert!(r.x >= 0.0 && r.y >= 0.0 && r.x <= 200.0 && r.y <= 1080.0);
     }
 }

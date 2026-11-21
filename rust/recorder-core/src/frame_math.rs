@@ -44,7 +44,7 @@ pub fn letterbox(source: PixelSize, frame: PixelSize) -> RectF {
 }
 
 pub fn bitrate(size: PixelSize, frame_rate: i32) -> i32 {
-    size.width * size.height * frame_rate / 10
+    (i64::from(size.width) * i64::from(size.height) * i64::from(frame_rate) / 10).min(i64::from(i32::MAX)) as i32
 }
 
 #[cfg(test)]
@@ -84,5 +84,10 @@ mod tests {
     #[test]
     fn bitrate_1080p60() {
         assert_eq!(12_441_600, bitrate(p(1920, 1080), 60));
+    }
+
+    #[test]
+    fn bitrate_saturates_instead_of_overflowing() {
+        assert_eq!(i32::MAX, bitrate(p(15360, 8640), 240));
     }
 }

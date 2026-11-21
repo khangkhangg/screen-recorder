@@ -1,6 +1,6 @@
 use crate::frame_math::PixelSize;
 use crate::layout::Layout;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -8,6 +8,7 @@ use std::fmt;
 pub struct SourceEntry {
     pub file: String,
     pub kind: String,
+    #[serde(serialize_with = "whole_number")]
     pub offset_seconds: f64,
     pub width: Option<i32>,
     pub height: Option<i32>,
@@ -16,6 +17,7 @@ pub struct SourceEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutChange {
+    #[serde(serialize_with = "whole_number")]
     pub at_seconds: f64,
     pub layout: Layout,
 }
@@ -23,7 +25,9 @@ pub struct LayoutChange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PauseEntry {
+    #[serde(serialize_with = "whole_number")]
     pub at_seconds: f64,
+    #[serde(serialize_with = "whole_number")]
     pub duration_seconds: f64,
 }
 
@@ -59,7 +63,17 @@ impl fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+// .NET writes whole-number doubles without a decimal point, so recordings from both apps match.
+fn whole_number<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        s.serialize_i64(*v as i64)
+    } else {
+        s.serialize_f64(*v)
+    }
+}
+
 pub fn serialize_session(f: &SessionFile) -> String {
+    // Only strings, numbers and lists, which JSON always holds.
     serde_json::to_string_pretty(f).expect("a session file always converts to JSON")
 }
 
@@ -153,8 +167,8 @@ mod tests {
             frame_rate: 60,
             target_kind: "monitor".into(),
             sources: vec![SourceEntry { file: "screen.mp4".into(), kind: "screen".into(), offset_seconds: 0.0, width: Some(1920), height: Some(1080) }],
-            layout_changes: vec![LayoutChange { at_seconds: 5.0, layout: Layout::default() }],
-            pauses: vec![],
+            layout_changes: vec![LayoutChange { at_seconds: 0.0, layout: Layout::default() }],
+            pauses: vec![PauseEntry { at_seconds: 5.0, duration_seconds: 2.5 }],
             dropped_frames: 0,
             notes: vec![],
         }
@@ -175,18 +189,25 @@ mod tests {
     }
 
     #[test]
+    fn whole_numbers_are_written_like_dotnet() {
+        let json = serialize_session(&sample());
+        assert!(json.contains("\"atSeconds\": 5,"));
+        assert!(json.contains("\"durationSeconds\": 2.5"));
+    }
+
+    #[test]
     fn newer_version_is_refused() {
         assert!(matches!(deserialize_session("{\"version\": 2}"), Err(SessionError::NewerVersion)));
     }
 
     #[test]
     fn reads_a_session_file_written_by_the_csharp_app() {
-        let example = EXAMPLE.trim().replace("\r\n", "\n");
+        let example = EXAMPLE.trim().replace("
+", "
+");
         let f = deserialize_session(&example).unwrap();
         assert_eq!(f.version, 1);
-        let written = serialize_session(&f);
-        // .NET writes whole-number doubles as `0`, serde_json as `0.0`, so only these 2 fields differ in text.
-        assert_eq!(written.replace("\"offsetSeconds\": 0.0", "\"offsetSeconds\": 0").replace("\"atSeconds\": 0.0", "\"atSeconds\": 0"), example);
-        assert_eq!(f, deserialize_session(&written).unwrap());
+        assert_eq!(serialize_session(&f), example);
+        assert_eq!(f, deserialize_session(&serialize_session(&f)).unwrap());
     }
 }

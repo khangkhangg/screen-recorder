@@ -14,7 +14,7 @@ pub struct SavedRegion {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub output_folder: String,
     pub record_hotkey: Hotkey,
@@ -54,7 +54,6 @@ impl Default for Settings {
     }
 }
 
-// shortcut: a file with a missing required field loads as all defaults, where the C# app only replaces the unusable fields; replace if users hit it.
 fn load_from_str(text: &str) -> Settings {
     match serde_json::from_str::<Settings>(text) {
         Ok(s) if s.frame_rate > 0 => s,
@@ -71,6 +70,7 @@ impl Settings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        // Only strings, numbers and lists, which JSON always holds.
         std::fs::write(path, serde_json::to_string_pretty(self).expect("settings always convert to JSON"))
     }
 }
@@ -180,5 +180,19 @@ mod tests {
         assert_eq!(s.record_hotkey, Hotkey { ctrl: true, shift: true, alt: false, win: false, virtual_key: 82 });
         assert_eq!(s.output_folder, r"C:\Users\someone\Videos\ScreenRecorder");
         assert_eq!(serde_json::to_string_pretty(&s).unwrap(), csharp);
+    }
+
+    #[test]
+    fn missing_fields_take_their_defaults() {
+        let s = load_from_str(r#"{"frameRate":30}"#);
+        assert_eq!(s, Settings { frame_rate: 30, ..Settings::default() });
+    }
+
+    #[test]
+    fn one_missing_field_keeps_the_others() {
+        let want = Settings { frame_rate: 30, countdown: false, region: Some(SavedRegion { monitor: "m".into(), x: 1, y: 2, width: 3, height: 4 }), ..Settings::default() };
+        let mut json = serde_json::to_value(&want).unwrap();
+        json.as_object_mut().unwrap().remove("mic");
+        assert_eq!(Settings { mic: Settings::default().mic, ..want }, load_from_str(&json.to_string()));
     }
 }
