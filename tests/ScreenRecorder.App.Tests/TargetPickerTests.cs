@@ -1,6 +1,7 @@
 using ScreenRecorder.App;
 using ScreenRecorder.Capture;
 using ScreenRecorder.Core;
+using Windows.Graphics;
 
 namespace ScreenRecorder.App.Tests;
 
@@ -45,4 +46,38 @@ public class TargetPickerTests
     [Fact]
     public void Region_of_exactly_16_pixels_is_kept() =>
         Assert.Equal(new RegionTarget(1, 0, 0, 16, 16), TargetPicker.ToRegion(1, 0, 0, 16, 16, 1, 1920, 1080));
+
+    // Region in the middle: the 2 pixel border sits just outside it, the label above its top-left corner.
+    [Fact]
+    public void Outline_sits_outside_the_region()
+    {
+        var (sides, label) = TargetPicker.Outline(new RectInt32(100, 200, 1280, 720), new RectInt32(0, 0, 1920, 1080), 2, 30);
+        Assert.Equal([new(98, 198, 1284, 2), new(98, 920, 1284, 2), new(98, 198, 2, 724), new(1380, 198, 2, 724)], sides);
+        Assert.Equal(new PointInt32(98, 168), label);
+    }
+
+    // Region in the top-left corner: the border runs just inside the screen edges, the label goes inside.
+    [Fact]
+    public void Outline_at_top_left_screen_edge_stays_on_screen()
+    {
+        var (sides, label) = TargetPicker.Outline(new RectInt32(0, 0, 1280, 720), new RectInt32(0, 0, 1920, 1080), 2, 30);
+        Assert.Equal([new(0, 0, 1282, 2), new(0, 720, 1282, 2), new(0, 0, 2, 722), new(1280, 0, 2, 722)], sides);
+        Assert.Equal(new PointInt32(2, 2), label);
+    }
+
+    // Region in the bottom-right corner of a monitor left of the primary one.
+    [Fact]
+    public void Outline_at_bottom_right_screen_edge_stays_on_screen()
+    {
+        var (sides, label) = TargetPicker.Outline(new RectInt32(-640, 360, 640, 720), new RectInt32(-1920, 0, 1920, 1080), 2, 30);
+        Assert.Equal([new(-642, 358, 642, 2), new(-642, 1078, 642, 2), new(-642, 358, 2, 722), new(-2, 358, 2, 722)], sides);
+        Assert.Equal(new PointInt32(-642, 328), label);
+    }
+
+    [Fact]
+    public void Outline_label_goes_inside_when_there_is_no_room_above()
+    {
+        var (_, label) = TargetPicker.Outline(new RectInt32(100, 10, 200, 200), new RectInt32(0, 0, 1920, 1080), 2, 30);
+        Assert.Equal(new PointInt32(100, 10), label);
+    }
 }

@@ -1,5 +1,6 @@
 using ScreenRecorder.Capture;
 using ScreenRecorder.Core;
+using Windows.Graphics;
 
 namespace ScreenRecorder.App;
 
@@ -34,5 +35,17 @@ public static class TargetPicker
         int left = Px(Math.Min(x1, x2), monitorWidth), right = Px(Math.Max(x1, x2), monitorWidth);
         int top = Px(Math.Min(y1, y2), monitorHeight), bottom = Px(Math.Max(y1, y2), monitorHeight);
         return right - left < 16 || bottom - top < 16 ? null : new RegionTarget(hmonitor, left, top, right - left, bottom - top);
+    }
+
+    // Top, bottom, left and right border strips just outside a region on screen, clamped into its monitor,
+    // and the label's top-left corner: above the border, or inside the region when there is no room above.
+    public static (RectInt32[] Sides, PointInt32 Label) Outline(RectInt32 region, RectInt32 monitor, int thickness, int labelHeight)
+    {
+        int left = Math.Max(region.X - thickness, monitor.X), top = Math.Max(region.Y - thickness, monitor.Y);
+        int right = Math.Min(region.X + region.Width + thickness, monitor.X + monitor.Width);
+        int bottom = Math.Min(region.Y + region.Height + thickness, monitor.Y + monitor.Height);
+        RectInt32[] sides = [new(left, top, right - left, thickness), new(left, bottom - thickness, right - left, thickness),
+            new(left, top, thickness, bottom - top), new(right - thickness, top, thickness, bottom - top)];
+        return (sides, top - labelHeight >= monitor.Y ? new(left, top - labelHeight) : new(left + thickness, top + thickness));
     }
 }

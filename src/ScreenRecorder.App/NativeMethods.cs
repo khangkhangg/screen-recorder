@@ -9,7 +9,7 @@ namespace ScreenRecorder.App;
 static class NativeMethods
 {
     const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
-    const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_LAYERED = 0x80000, WS_EX_NOACTIVATE = 0x08000000, DWMWA_CLOAKED = 14, DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+    const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_LAYERED = 0x80000, WS_EX_TRANSPARENT = 0x20, WS_EX_NOACTIVATE = 0x08000000, DWMWA_CLOAKED = 14, DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     const uint MONITORINFOF_PRIMARY = 1, LWA_ALPHA = 2, WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 2, MB_ICONWARNING = 0x30;
 
     public struct Rect { public int Left, Top, Right, Bottom; }
@@ -120,6 +120,37 @@ static class NativeMethods
     }
 
     // Makes the whole window see-through, which is how the region picker dims the screen.
+    [DllImport("gdi32.dll")] static extern int CombineRgn(nint dest, nint a, nint b, int mode);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(nint obj);
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(nint hmonitor, int type, out uint x, out uint y);
+
+    // Shapes a window to these rectangles in window pixels, so clicks and pixels outside them are not the window's.
+    public static void SetRegion(nint hwnd, IEnumerable<RectInt32> rects)
+    {
+        var region = CreateRectRgn(0, 0, 0, 0);
+        foreach (var r in rects)
+        {
+            var part = CreateRectRgn(r.X, r.Y, r.X + r.Width, r.Y + r.Height);
+            CombineRgn(region, region, part, 2); // RGN_OR
+            DeleteObject(part);
+        }
+        SetWindowRgn(hwnd, region, true); // the window owns the region now
+    }
+
+    public static double MonitorScale(nint hmonitor) => GetDpiForMonitor(hmonitor, 0, out var dpi, out _) == 0 ? dpi / 96.0 : 1;
+
+    [DllImport("user32.dll")] static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int cx, int cy, uint flags);
+
+    // Back on top of the topmost windows, without moving, sizing or activating it.
+    public static void BringToTop(nint hwnd) => SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x13); // HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+
+    // Layered and transparent to the mouse, so clicks pass to whatever is under the window.
+    public static void ClickThrough(nint hwnd)
+    {
+        SetOpacity(hwnd, 255);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT);
+    }
+
     public static void SetOpacity(nint hwnd, byte alpha)
     {
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
