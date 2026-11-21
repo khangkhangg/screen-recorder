@@ -1,0 +1,25 @@
+mod error;
+mod gfx;
+mod targets;
+
+pub use error::{Error, Result};
+pub use gfx::Device;
+pub use targets::{find_window, monitors, windows, CaptureTarget, MonitorInfo, WindowInfo};
+
+use ::windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL, MF_VERSION};
+use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use ::windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+
+/// Call first on the main thread: makes positions physical pixels, joins the COM
+/// multithreaded apartment and starts Media Foundation. Safe to call more than once.
+pub fn init_process() -> Result<()> {
+    // This fails once awareness is set, by an earlier call or a manifest, which is fine.
+    let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    // A repeat call returns S_FALSE, which counts as success.
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        .ok()
+        .map_err(|e| error::win(e, |m| Error::NotSupported(format!("COM could not start on this thread. {m}"))))?;
+    // Media Foundation counts its starts, so repeats are allowed.
+    unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }
+        .map_err(|e| error::win(e, |m| Error::Encoder(format!("Media Foundation could not start. {m}"))))
+}
