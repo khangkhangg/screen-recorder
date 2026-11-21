@@ -11,7 +11,7 @@ You need the .NET 10 SDK.
 1. Build everything with `dotnet build ScreenRecorder.slnx`.
 2. Run the app with `dotnet run --project src/ScreenRecorder.App`.
 3. Run all tests with `dotnet test ScreenRecorder.slnx`.
-4. Make a folder that runs on a PC without .NET with `dotnet publish src/ScreenRecorder.App -c Release -r win-x64 --self-contained`. The result is in `src/ScreenRecorder.App/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/`, and you start `ScreenRecorder.App.exe` there.
+4. Make a self-contained folder with `dotnet publish src/ScreenRecorder.App -c Release -r win-x64 --self-contained`. It is built to run without .NET installed, but it has not been tried on a PC without .NET. The result is in `src/ScreenRecorder.App/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/`, and you start `ScreenRecorder.App.exe` there.
 
 ## Output files
 
@@ -44,7 +44,7 @@ All numbers come from one laptop with Intel UHD Graphics on a Core i5-14500HX, 2
 | App CPU while recording | none set | 1.5% to 2.7% of all cores |
 | Stop, from pressing Stop until the files are done | none set | 0.19 to 0.64 s |
 
-The 4K target is missed on this integrated graphics chip when the screen keeps changing. Its hardware encoder cannot keep up with 3840x2160 frames, so the app drops frames from `final.mp4` and repeats the previous frame in their place. Dropped frames affect `final.mp4` only. In every 4K run `final.mp4` and `screen.mp4` had the same frame count, and the video files and both WAV files were within 0.03 seconds of each other in length. The stop message tells you how many frames were dropped.
+The 4K target is missed on this integrated graphics chip when the screen keeps changing. The likely cause is that its hardware encoder cannot keep up with 3840x2160 frames. When `final.mp4` falls behind, the app drops frames from `final.mp4` and repeats the previous frame in their place. Dropped frames affect `final.mp4` only. In every 4K run `final.mp4` and `screen.mp4` had the same frame count, and the video files and both WAV files were within 0.03 seconds of each other in length. The stop message tells you how many frames were dropped.
 
 A crash keeps the recording playable. When the app was killed 30 seconds into a 4K recording, all 5 files were there, both MP4 files opened with 29.7 seconds of video, both WAV files held 30.0 seconds, and `session.json` parsed.
 
@@ -53,7 +53,13 @@ A crash keeps the recording playable. When the app was killed 30 seconds into a 
 - WAV files hold about 3.1 hours of sound, so longer recordings lose the end of `mic.wav` and `system.wav`.
 - HDR screens are converted to standard colors, which clips the brightest highlights. On the HDR test screen pure colors, black and white came out right, and mid-gray came out about 4% lighter.
 - The camera code is untested on real hardware, because the test laptop has no webcam.
-- 4K recording drops frames on integrated graphics when the screen changes a lot, as shown above.
+- 4K recording drops frames on integrated graphics when the screen changes a lot, as shown above. On these busy 3840x2160 runs `final.mp4` holds repeated frames and reads as not constant frame rate.
+- The 1920x1080 at 60 fps number was measured on a 1920x1080 window, not a dragged region.
+- The published folder is 168.6 MB in 378 files.
+- The tests need a desktop session with a display. One test skips itself on monitors that are not larger than 2560x1440.
+- The app has never been run on Windows 10.
+- After a recorded window changes shape, the camera and logo on the screen no longer match where the finished video draws them.
+- If the default sound output device changes during a recording, computer sound stops for the rest of the recording, and a note says so at stop.
 
 These checks still need a person:
 
