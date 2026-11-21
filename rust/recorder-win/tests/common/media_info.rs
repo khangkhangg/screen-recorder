@@ -2,7 +2,7 @@ use std::path::Path;
 
 use windows::core::HSTRING;
 use windows::Win32::Media::MediaFoundation::{
-    IMFSourceReader, MFCreateSourceReaderFromURL, MF_MT_FRAME_SIZE, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR,
+    IMFSourceReader, MFCreateSourceReaderFromURL, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR,
     MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
 };
 
@@ -19,17 +19,22 @@ pub struct MediaInfo {
 
 /// Reads the compressed samples without decoding them, so it is fast on long files. Call `init_process` first.
 pub fn read(path: &Path) -> MediaInfo {
-    let size = unsafe { reader(path).GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, 0) }
-        .and_then(|t| unsafe { t.GetUINT64(&MF_MT_FRAME_SIZE) })
-        .unwrap();
+    let video_type =
+        unsafe { reader(path).GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, 0) }.unwrap();
+    let size = unsafe { video_type.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap();
+    let rate = unsafe { video_type.GetUINT64(&MF_MT_FRAME_RATE) }.unwrap();
+    let frame_rate = (rate >> 32) as f64 / (rate as u32) as f64;
     let mut video = samples(path, MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32);
     let has_audio = unsafe { reader(path).GetNativeMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32, 0) }.is_ok();
     let audio = if has_audio { samples(path, MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32) } else { Vec::new() };
     video.sort();
-    // Times are whole 100 ns units, so spacing and durations may differ by 1.
+    // Frame i starts within 1 ms of its slot, because the MP4 muxer shifts times by about
+    // 168 ticks when a sound track is present. No skipped index fits that.
     let constant = video.len() > 1
-        && video.windows(2).all(|p| (p[1].0 - p[0].0 - (video[1].0 - video[0].0)).abs() <= 1)
-        && video.iter().all(|s| (s.1 - video[0].1).abs() <= 1);
+        && video.iter().enumerate().all(|(i, s)| {
+            let expected = (i as f64 * 10_000_000.0 / frame_rate).round() as i64;
+            (s.0 - video[0].0 - expected).abs() <= 10_000
+        });
     MediaInfo {
         duration: length(&video),
         frame_count: video.len(),

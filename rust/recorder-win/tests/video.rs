@@ -148,8 +148,8 @@ fn cut_off_file_still_plays() {
     assert!(info.frame_count >= 120, "{info:?}");
 }
 
-/// Runs only as the child process of `works_without_a_multithreaded_apartment`. No thread of this process
-/// joins the multithreaded apartment, so the writer's worker cannot borrow one.
+/// Runs only as the child process of `works_from_a_single_threaded_caller`. It shows the writer works when
+/// the calling thread is in a single-threaded apartment. It does not prove the worker starts COM itself.
 #[test]
 #[ignore = "needs the desktop"]
 fn child_writes_from_a_single_threaded_apartment() {
@@ -172,7 +172,7 @@ fn child_writes_from_a_single_threaded_apartment() {
 
 #[test]
 #[ignore = "needs the desktop"]
-fn works_without_a_multithreaded_apartment() {
+fn works_from_a_single_threaded_caller() {
     init_process().unwrap();
     let path = TempMp4::new();
     let output = start_child("child_writes_from_a_single_threaded_apartment", &path.0).wait_with_output().unwrap();
@@ -225,6 +225,8 @@ fn sound_past_the_end_of_the_video_finishes() {
         writer.finish().unwrap();
         let info = media_info::read(&path.0);
         println!("finish took {:?}, {info:?}", watch.elapsed());
+        assert!(info.constant_frame_rate, "{info:?}");
+        assert_eq!(info.frame_count, 60);
     });
 }
 
