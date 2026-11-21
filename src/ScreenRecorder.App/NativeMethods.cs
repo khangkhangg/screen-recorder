@@ -60,6 +60,22 @@ static class NativeMethods
         return SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
     }
 
+    delegate void WinEventProc(nint hook, uint ev, nint hwnd, int idObject, int idChild, uint thread, uint time);
+    [DllImport("user32.dll")] static extern nint SetWinEventHook(uint min, uint max, nint module, WinEventProc proc, uint pid, uint thread, uint flags);
+    [DllImport("user32.dll")] static extern nint GetAncestor(nint hwnd, uint flags);
+    static WinEventProc? popupHook; // the hook holds no reference of its own
+
+    // Tooltips, menus and flyouts are top-level windows of class Microsoft.UI.Content.PopupWindowSiteBridge,
+    // so every top-level window this process creates or shows is hidden from capture too. Call once on the UI thread.
+    public static void ExcludePopupsFromCapture()
+    {
+        popupHook = (_, _, hwnd, idObject, idChild, _, _) =>
+        {
+            if (idObject == 0 && idChild == 0 && GetAncestor(hwnd, 2) == hwnd) ExcludeFromCapture(hwnd); // OBJID_WINDOW, GA_ROOT
+        };
+        SetWinEventHook(0x8000, 0x8002, 0, popupHook, (uint)Environment.ProcessId, 0, 0); // EVENT_OBJECT_CREATE to EVENT_OBJECT_SHOW, out of context
+    }
+
     // Monitor rectangles in physical pixels, primary first.
     public static List<(nint Hmonitor, Rect Bounds, bool Primary)> Monitors()
     {
