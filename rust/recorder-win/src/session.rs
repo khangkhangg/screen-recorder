@@ -77,6 +77,13 @@ pub struct RecordingResult {
     pub screen_file_size: PixelSize,
 }
 
+/// The notes for a result the recording thread never gave: the session's notes, then why.
+fn unexpected_stop_notes(session_notes: &[String]) -> Vec<String> {
+    let mut notes = session_notes.to_vec();
+    notes.push("The recording stopped unexpectedly.".into());
+    notes
+}
+
 fn recording_result(folder: &Path, file: &SessionFile, files: Vec<String>, notes: Vec<String>) -> RecordingResult {
     let screen = file.sources.iter().find(|e| e.file == "screen.mp4");
     let screen_file_size = screen
@@ -309,9 +316,7 @@ impl RecordingSession {
         let result = lock(&self.shared.result).clone();
         result.unwrap_or_else(|| {
             let s = self.shared.state();
-            let mut notes = s.file.notes.clone();
-            notes.push("The recording stopped unexpectedly.".into());
-            recording_result(&self.shared.folder, &s.file, Vec::new(), notes)
+            recording_result(&self.shared.folder, &s.file, Vec::new(), unexpected_stop_notes(&s.file.notes))
         })
     }
 
@@ -981,6 +986,15 @@ mod tests {
         let text = fs::read_to_string(folder.join("session.json")).unwrap();
         fs::remove_dir_all(&folder).unwrap();
         assert!(text.contains("a note"), "{text}");
+    }
+
+    #[test]
+    fn unexpected_stop_keeps_the_session_notes() {
+        let notes = unexpected_stop_notes(&["a note from the caller".into(), "mic lost at 1.0 s".into()]);
+        assert_eq!(
+            vec!["a note from the caller", "mic lost at 1.0 s", "The recording stopped unexpectedly."],
+            notes
+        );
     }
 
     #[test]
