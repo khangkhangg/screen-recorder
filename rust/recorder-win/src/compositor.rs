@@ -99,14 +99,14 @@ impl Compositor {
         Ok(&self.output.texture)
     }
 
-    /// The full camera frame for `webcam.mp4`, with no mask and no mirror.
-    pub fn draw_camera_file(&mut self, camera: &Frame) -> Result<&ID3D11Texture2D> {
+    /// The full camera frame for `webcam.mp4`, with no mask and no mirror, in a texture of the writer's `size`.
+    pub fn draw_camera_file(&mut self, camera: &Frame, size: PixelSize) -> Result<&ID3D11Texture2D> {
         let file = match self.camera_file.take() {
-            Some(file) if file.size == camera.size => file,
-            _ => target(&self.device, &self.context, camera.size).map_err(|e| win(e, Error::Device, DRAW_ERROR))?,
+            Some(file) if file.size == size => file,
+            _ => target(&self.device, &self.context, size).map_err(|e| win(e, Error::Device, DRAW_ERROR))?,
         };
         let file = self.camera_file.insert(file);
-        paint(&self.context, &self.lock, &file.bitmap, |dc| draw_letterboxed(dc, camera, camera.size))
+        paint(&self.context, &self.lock, &file.bitmap, |dc| draw_letterboxed(dc, camera, size))
             .map_err(|e| win(e, Error::Device, DRAW_ERROR))?;
         Ok(&file.texture)
     }

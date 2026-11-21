@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use recorder_core::frame_math::PixelSize;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -124,17 +124,52 @@ impl AudioIn for FakeMic {
     }
 }
 
-/// Wraps a real writer. `behind` replaces its frames_behind, and from frame `fail_at` on every write fails like a full disk.
+/// Wraps a real writer. `queue` replaces its frames_behind, from frame `fail_at` on every write fails like a full disk,
+/// and writing frame 0 first sleeps for `stall`, like an encoder that starts up slowly.
 pub struct FakeWriter {
     pub inner: Box<dyn VideoOut>,
-    pub behind: Option<i64>,
+    pub queue: Option<Arc<FakeQueue>>,
     pub fail_at: Option<i64>,
+    pub stall: Option<Duration>,
+}
+
+/// An encoder that finishes `rate` frames per second, so frames sent faster wait in its queue.
+pub struct FakeQueue {
+    rate: f64,
+    /// When the queue will be empty, and the most frames ever queued at once.
+    state: Mutex<(Instant, i64)>,
+}
+
+impl FakeQueue {
+    pub fn new(rate: u32) -> Self {
+        FakeQueue { rate: f64::from(rate), state: Mutex::new((Instant::now(), 0)) }
+    }
+
+    pub fn most_queued(&self) -> i64 {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).1
+    }
+
+    fn queued(&self, empty_at: Instant) -> i64 {
+        (empty_at.saturating_duration_since(Instant::now()).as_secs_f64() * self.rate).ceil() as i64
+    }
+
+    fn push(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.0 = s.0.max(Instant::now()) + Duration::from_secs_f64(1.0 / self.rate);
+        s.1 = s.1.max(self.queued(s.0));
+    }
 }
 
 impl VideoOut for FakeWriter {
     fn write_frame(&mut self, texture: &ID3D11Texture2D, index: i64) -> Result<()> {
         if self.fail_at.is_some_and(|at| index >= at) {
             return Err(Error::Io(io::Error::other("There is not enough space on the disk.")));
+        }
+        if let (0, Some(stall)) = (index, self.stall) {
+            std::thread::sleep(stall);
+        }
+        if let Some(queue) = &self.queue {
+            queue.push();
         }
         self.inner.write_frame(texture, index)
     }
@@ -144,7 +179,10 @@ impl VideoOut for FakeWriter {
     }
 
     fn frames_behind(&self) -> i64 {
-        self.behind.unwrap_or_else(|| self.inner.frames_behind())
+        match &self.queue {
+            Some(queue) => queue.queued(queue.state.lock().unwrap_or_else(|e| e.into_inner()).0),
+            None => self.inner.frames_behind(),
+        }
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -162,6 +200,8 @@ pub struct FakeFactory {
     pub webcam: Option<FakeWebcam>,
     pub mic: Option<FakeMic>,
     pub wrap: Option<Wrap>,
+    /// The fake webcam's frame size, 640x480 when not set.
+    pub webcam_size: Option<PixelSize>,
 }
 
 impl SourceFactory for FakeFactory {
@@ -174,7 +214,8 @@ impl SourceFactory for FakeFactory {
 
     fn open_webcam(&self, _id: &str, device: &Device) -> Result<Box<dyn Camera>> {
         let Some(webcam) = &self.webcam else { return Err(Error::Device("Camera in use.".into())) };
-        let frame = solid(device, PixelSize { width: 640, height: 480 }, [0, 200, 0, 255])?;
+        let size = self.webcam_size.unwrap_or(PixelSize { width: 640, height: 480 });
+        let frame = solid(device, size, [0, 200, 0, 255])?;
         Ok(Box::new(FakeCamera { frame, lost: webcam.0.clone() }))
     }
 

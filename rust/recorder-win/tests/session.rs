@@ -5,7 +5,7 @@ use std::fs;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -13,7 +13,7 @@ use media_info::MediaInfo;
 use recorder_core::frame_math::PixelSize;
 use recorder_core::layout::Layout;
 use recorder_core::session::{deserialize_session, SessionFile};
-use recorder_win::fakes::{folder_name, FakeFactory, FakeMic, FakeScreen, FakeWebcam, FakeWriter};
+use recorder_win::fakes::{folder_name, FakeFactory, FakeMic, FakeQueue, FakeScreen, FakeWebcam, FakeWriter};
 use recorder_win::{
     init_process, monitors, CaptureTarget, EncoderSupport, Error, PreflightResult, RecordingOptions, RecordingResult,
     RecordingSession, VideoOut,
@@ -213,7 +213,7 @@ fn disk_full_stops_and_keeps_files_playable() {
     let (o, _root) = options();
     let f = FakeFactory {
         wrap: Some(Box::new(|name, w| {
-            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, behind: None, fail_at: Some(60) }) } else { w })
+            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(60), stall: None }) } else { w })
         })),
         ..FakeFactory::default()
     };
@@ -309,7 +309,12 @@ fn slow_final_encoder_drops_final_frames_only() {
     let (o, _root) = options();
     let f = FakeFactory {
         wrap: Some(Box::new(|name, w| {
-            Ok(if name == "final.mp4" { Box::new(FakeWriter { inner: w, behind: Some(100), fail_at: None }) } else { w })
+            // An encoder at half the frame rate falls behind while recording and catches up at stop.
+            Ok(if name == "final.mp4" {
+                Box::new(FakeWriter { inner: w, queue: Some(Arc::new(FakeQueue::new(30))), fail_at: None, stall: None })
+            } else {
+                w
+            })
         })),
         ..FakeFactory::default()
     };
@@ -346,7 +351,9 @@ fn normal_frame_keeps_60() {
 fn session_json_held_open_breaks_nothing() {
     let (o, _root) = options();
     let s = start(&o, fake_screen(1920, 1080));
-    let folder = fs::read_dir(&o.output_root).unwrap().next().unwrap().unwrap().path();
+    let folders: Vec<_> = fs::read_dir(&o.output_root).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(folders.len(), 1, "{folders:?}");
+    let folder = &folders[0];
     wait(500);
     {
         let _held = fs::OpenOptions::new().read(true).share_mode(0).open(folder.join("session.json")).unwrap();
@@ -355,19 +362,32 @@ fn session_json_held_open_breaks_nothing() {
         wait(500);
     }
     stop_within(s, Duration::from_secs(5));
-    assert!(info(&folder, "screen.mp4").frame_count > 0);
+    assert!(info(folder, "screen.mp4").frame_count > 0);
 }
 
 #[test]
 #[ignore = "needs the desktop"]
 fn failed_start_removes_its_folder() {
     let (o, _root) = options();
+    // Records the recording folder when the first writer opens, then fails.
+    let seen = Arc::new(Mutex::new(None));
+    let (root, seen_in) = (o.output_root.clone(), seen.clone());
     let f = FakeFactory {
-        wrap: Some(Box::new(|name, w| if name == "final.mp4" { fail(w) } else { Ok(w) })),
+        wrap: Some(Box::new(move |name, w| {
+            if name != "screen.mp4" {
+                return Ok(w);
+            }
+            let folders: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).collect();
+            *seen_in.lock().unwrap() = Some(folders);
+            fail(w)
+        })),
         ..fake_screen(1920, 1080)
     };
     let p = RecordingSession::preflight_with(&o, &f).unwrap();
     assert!(matches!(RecordingSession::start_with(o.clone(), &p, Box::new(f)), Err(Error::Invalid(_))));
+    let seen = seen.lock().unwrap().take().expect("the first writer was never opened");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(!seen[0].exists());
     assert_eq!(fs::read_dir(&o.output_root).unwrap().count(), 0);
 }
 
@@ -416,7 +436,7 @@ fn desktop_4k_keeps_its_frames() {
     let (o, _root) = options();
     let primary = monitors().into_iter().find(|m| m.primary).unwrap();
     if i64::from(primary.width) * i64::from(primary.height) <= 2560 * 1440 {
-        println!("skipped: the primary monitor is not larger than 2560x1440");
+        println!("skipped: the primary monitor is {}x{}, not larger than 2560x1440", primary.width, primary.height);
         return;
     }
     let o = RecordingOptions { mic: true, ..o };
@@ -464,6 +484,105 @@ fn output_root_on_a_missing_drive_is_a_disk_error() {
         screen_file_size: size,
     };
     let started = RecordingSession::start_with(o, &p, Box::new(FakeFactory::default()));
-    assert!(matches!(started, Err(Error::Io(_))));
-    assert!(!root.exists());
+    let Err(Error::Io(e)) = started else { panic!("expected a disk error, got {:?}", started.err()) };
+    let message = e.to_string();
+    assert!(message.starts_with(char::is_uppercase) && message.contains(". "), "{message}");
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn frame_rate_outside_1_to_120_is_refused() {
+    let (o, _root) = options();
+    for rate in [0, 121] {
+        let o = RecordingOptions { frame_rate: rate, ..o.clone() };
+        let p = RecordingSession::preflight_with(&o, &fake_screen(1920, 1080));
+        assert!(matches!(p, Err(Error::Invalid(_))), "{rate}");
+    }
+    for rate in [1, 120] {
+        let o = RecordingOptions { frame_rate: rate, ..o.clone() };
+        assert_eq!(rate, RecordingSession::preflight_with(&o, &fake_screen(1920, 1080)).unwrap().frame_rate);
+    }
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn odd_camera_size_gives_an_even_webcam_file() {
+    let (o, _root) = options();
+    let f = FakeFactory {
+        webcam: Some(FakeWebcam::default()),
+        webcam_size: Some(PixelSize { width: 641, height: 481 }),
+        ..FakeFactory::default()
+    };
+    let s = start(&RecordingOptions { webcam_id: Some("fake".into()), ..o }, f);
+    wait(1000);
+    let result = stop(s);
+    let webcam = info(&result.folder, "webcam.mp4");
+    assert_eq!((640, 480), (webcam.width, webcam.height));
+    assert!(webcam.frame_count > 0);
+    assert!(!result.notes.iter().any(|n| n.starts_with("webcam lost")), "{:?}", result.notes);
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn failing_webcam_writer_keeps_recording() {
+    let (o, _root) = options();
+    let f = FakeFactory {
+        webcam: Some(FakeWebcam::default()),
+        wrap: Some(Box::new(|name, w| {
+            Ok(if name == "webcam.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(9), stall: None }) } else { w })
+        })),
+        ..FakeFactory::default()
+    };
+    let s = start(&RecordingOptions { webcam_id: Some("fake".into()), ..o }, f);
+    wait(2000);
+    let result = stop(s);
+    assert!(result.notes.iter().any(|n| n.starts_with("webcam lost at")), "{:?}", result.notes);
+    let screen = info(&result.folder, "screen.mp4").duration;
+    assert!((1.9..=2.2).contains(&screen), "{screen}");
+    let last = info(&result.folder, "final.mp4").duration;
+    assert!((1.9..=2.2).contains(&last), "{last}");
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn stuck_final_encoder_bounds_the_stop() {
+    let (o, _root) = options();
+    let queue = Arc::new(FakeQueue::new(1));
+    let queue_in = queue.clone();
+    let f = FakeFactory {
+        wrap: Some(Box::new(move |name, w| {
+            Ok(if name == "final.mp4" {
+                Box::new(FakeWriter { inner: w, queue: Some(queue_in.clone()), fail_at: None, stall: None })
+            } else {
+                w
+            })
+        })),
+        // A fake screen keeps 60 frames per second, which the queue limit below assumes.
+        ..fake_screen(1920, 1080)
+    };
+    let s = start(&o, f);
+    wait(2000);
+    let result = stop_within(s, Duration::from_secs(35));
+    assert!(queue.most_queued() <= 60, "{} frames queued at once", queue.most_queued());
+    assert!(result.notes.iter().any(|n| n.starts_with("final.mp4 is ") && n.ends_with(" frames short")), "{:?}", result.notes);
+    assert!(info(&result.folder, "final.mp4").frame_count > 0);
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn slow_encoder_start_drops_no_frames() {
+    let (o, _root) = options();
+    let f = FakeFactory {
+        wrap: Some(Box::new(|name, w| {
+            let stall = Some(Duration::from_millis(400));
+            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: None, stall }) } else { w })
+        })),
+        ..fake_screen(1920, 1080)
+    };
+    let s = start(&o, f);
+    wait(1000);
+    let result = stop(s);
+    assert_eq!(0, result.dropped_frames);
+    let screen = info(&result.folder, "screen.mp4").frame_count;
+    assert_eq!(screen, info(&result.folder, "final.mp4").frame_count);
 }

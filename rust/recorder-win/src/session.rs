@@ -33,6 +33,9 @@ const CAMERA_RATE: i32 = 30;
 const SOFTWARE_RATE: i32 = 30;
 const FINAL_MAX_BEHIND: i64 = 30;
 const MAX_BEHIND: i64 = 60;
+const WARM_UP_LIMIT: Duration = Duration::from_secs(3);
+/// How long stop waits for a slow final.mp4 encoder before it leaves the file short.
+const CATCH_UP_LIMIT: Duration = Duration::from_secs(30);
 /// The mix trails the clock by 100 ms, so a sound packet that arrives a little late is not replaced by silence.
 const AUDIO_LAG: i64 = AUDIO_RATE as i64 / 10;
 const TICKS_PER_SECOND: i64 = 10_000_000;
@@ -68,10 +71,12 @@ pub struct RecordingResult {
     pub notes: Vec<String>,
 }
 
-/// What the caller's thread and the recording thread share. The state lock also orders every session.json write.
+/// What the caller's thread and the recording thread share.
 struct Shared {
     folder: PathBuf,
     state: Mutex<State>,
+    /// The number of the newest session.json text on disk. Held while writing, so writes never overlap.
+    saved: Mutex<u64>,
     stop: AtomicBool,
     closed: AtomicBool,
     result: Mutex<Option<RecordingResult>>,
@@ -83,6 +88,8 @@ struct State {
     layout: Layout,
     ended: bool,
     disk_noted: bool,
+    /// Counts session.json texts, so an older text never replaces a newer one.
+    saves: u64,
 }
 
 impl Shared {
@@ -90,18 +97,27 @@ impl Shared {
         lock(&self.state)
     }
 
-    fn save(&self, s: &mut State, clock: &RecordingClock) {
+    /// Builds the text under the state lock and writes it after releasing the lock, so a slow disk never holds the lock.
+    fn save(&self, mut s: MutexGuard<'_, State>, clock: &RecordingClock) {
         s.file.pauses = clock.pauses();
+        s.saves += 1;
+        let (text, number) = (serialize_session(&s.file), s.saves);
+        drop(s);
+        let mut saved = lock(&self.saved);
+        if number < *saved {
+            return;
+        }
+        *saved = number;
         let path = self.folder.join("session.json");
         let temp = self.folder.join("session.json.tmp");
         // A full disk, or another program holding the file open, leaves the last good session.json in place.
-        let _ = fs::write(&temp, serialize_session(&s.file)).and_then(|()| fs::rename(&temp, &path));
+        let _ = fs::write(&temp, text).and_then(|()| fs::rename(&temp, &path));
     }
 
     fn note(&self, text: String, clock: &RecordingClock) {
         let mut s = self.state();
         s.file.notes.push(text);
-        self.save(&mut s, clock);
+        self.save(s, clock);
     }
 }
 
@@ -119,6 +135,9 @@ impl RecordingSession {
     }
 
     pub fn preflight_with(o: &RecordingOptions, factory: &dyn SourceFactory) -> Result<PreflightResult> {
+        if !(1..=120).contains(&o.frame_rate) {
+            return Err(Error::Invalid(format!("The frame rate must be from 1 to 120 frames per second, not {}.", o.frame_rate)));
+        }
         let files = 1 + u32::from(o.write_final) + u32::from(o.webcam_id.is_some());
         let encoders = check_encoders(files);
         let max = max_encoder_size();
@@ -174,7 +193,8 @@ impl RecordingSession {
         };
         let shared = Arc::new(Shared {
             folder: folder.clone(),
-            state: Mutex::new(State { file, layout: o.layout.clone(), ended: false, disk_noted: false }),
+            state: Mutex::new(State { file, layout: o.layout.clone(), ended: false, disk_noted: false, saves: 0 }),
+            saved: Mutex::new(0),
             stop: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             result: Mutex::new(None),
@@ -212,21 +232,21 @@ impl RecordingSession {
     }
 
     pub fn pause(&self) {
-        let mut s = self.shared.state();
+        let s = self.shared.state();
         if s.ended {
             return;
         }
         self.clock.pause();
-        self.shared.save(&mut s, &self.clock);
+        self.shared.save(s, &self.clock);
     }
 
     pub fn resume(&self) {
-        let mut s = self.shared.state();
+        let s = self.shared.state();
         if s.ended || self.shared.stop.load(SeqCst) || self.shared.closed.load(SeqCst) {
             return;
         }
         self.clock.resume();
-        self.shared.save(&mut s, &self.clock);
+        self.shared.save(s, &self.clock);
     }
 
     /// The recording thread picks up the new layout, and a new logo, on its next frame.
@@ -238,7 +258,7 @@ impl RecordingSession {
         let at_seconds = self.clock.media_time().as_secs_f64();
         s.file.layout_changes.push(LayoutChange { at_seconds, layout: logged(&l) });
         s.layout = l;
-        self.shared.save(&mut s, &self.clock);
+        self.shared.save(s, &self.clock);
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -426,11 +446,10 @@ impl Recorder {
             s.file.frame_rate = rate;
             s.file.sources = sources;
             s.file.notes.extend(notes);
-            clock.start();
-            shared.save(&mut s, &clock);
+            shared.save(s, &clock);
         }
         let (cam, last_cam) = cam.map_or((None, None), |(c, frame)| (Some(c), Some(frame)));
-        Ok(Recorder {
+        let mut recorder = Recorder {
             shared,
             clock,
             window: matches!(o.target, CaptureTarget::Window(_)),
@@ -454,7 +473,32 @@ impl Recorder {
             final_sound: Vec::new(),
             final_sound_at: 0,
             behind_noted: false,
-        })
+        };
+        recorder.warm_up()?;
+        recorder.clock.start();
+        Ok(recorder)
+    }
+
+    /// Writes the first frame as index 0 to every video file and gives the encoders up to 3 seconds to start,
+    /// so their slow start happens before the clock runs and costs no frames.
+    fn warm_up(&mut self) -> Result<()> {
+        let layout = self.shared.state().layout.clone();
+        if let Some(w) = self.screen_w.as_mut() {
+            w.write_frame(self.compositor.draw_screen(&self.last_screen)?, 0)?;
+        }
+        if let Some(w) = self.final_w.as_mut() {
+            let texture = self.compositor.draw_final(&self.last_screen, self.last_cam.as_ref(), &layout)?;
+            w.write_frame(texture, 0)?;
+            self.last_final = Some(texture.clone());
+        }
+        (self.written, self.final_next) = (1, 1);
+        self.write_camera(1)?;
+        let deadline = Instant::now() + WARM_UP_LIMIT;
+        let busy = |r: &Recorder| [&r.screen_w, &r.final_w, &r.cam_w].iter().any(|w| w.as_ref().is_some_and(|w| w.frames_behind() > 0));
+        while busy(self) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
     }
 
     /// Records until stopped or until something fails. Dropping `self` then finishes every file.
@@ -495,7 +539,7 @@ impl Recorder {
 
     fn tick(&mut self, flush: bool) -> Result<()> {
         if self.cam.as_ref().is_some_and(|c| c.is_lost()) {
-            self.lose_camera()?;
+            self.lose_camera();
         }
         let mut lost = Vec::new();
         for t in &mut self.tracks {
@@ -514,27 +558,37 @@ impl Recorder {
             self.write_video()?;
         }
         let cam_due = self.clock.media_time().as_nanos() as i64 / 100 * i64::from(CAMERA_RATE) / TICKS_PER_SECOND;
-        if let (Some(w), Some(frame)) = (self.cam_w.as_mut(), self.last_cam.as_ref()) {
-            if self.cam_written < cam_due {
-                let texture = self.compositor.draw_camera_file(frame)?;
-                while self.cam_written < cam_due {
-                    w.write_frame(texture, self.cam_written)?;
-                    self.cam_written += 1;
-                }
-            }
-        }
+        self.write_camera(cam_due)?;
         if !self.tracks.is_empty() {
             self.write_sound(flush)?;
         }
         Ok(())
     }
 
-    /// Ends webcam.mp4 where the camera went away or changed size, and records on without the camera.
-    fn lose_camera(&mut self) -> Result<()> {
+    /// Ends webcam.mp4 where the camera went away, changed size or its writer failed, and records on without the camera.
+    fn lose_camera(&mut self) {
         self.note(format!("webcam lost at {:.1} s", self.seconds()));
         self.cam = None;
         self.last_cam = None;
-        self.cam_w.take().map_or(Ok(()), |mut w| w.finish())
+        if let Some(mut w) = self.cam_w.take() {
+            let r = w.finish();
+            self.quietly(r);
+        }
+    }
+
+    /// Writes webcam.mp4 frames up to `due`. A failed write ends only the camera file.
+    fn write_camera(&mut self, due: i64) -> Result<()> {
+        let (Some(w), Some(frame)) = (self.cam_w.as_mut(), self.last_cam.as_ref()) else { return Ok(()) };
+        if self.cam_written >= due {
+            return Ok(());
+        }
+        let texture = self.compositor.draw_camera_file(frame, to_even(self.cam_frame))?;
+        if (self.cam_written..due).try_for_each(|i| w.write_frame(texture, i)).is_err() {
+            self.lose_camera();
+            return Ok(());
+        }
+        self.cam_written = due;
+        Ok(())
     }
 
     fn write_video(&mut self) -> Result<()> {
@@ -552,7 +606,7 @@ impl Recorder {
             if frame.size == self.cam_frame {
                 self.last_cam = Some(frame);
             } else {
-                self.lose_camera()?;
+                self.lose_camera();
             }
         }
         let layout = self.shared.state().layout.clone();
@@ -634,7 +688,7 @@ impl Recorder {
                 mix.iter_mut().zip(&buffer).for_each(|(m, b)| *m += b);
             }
             if self.final_w.is_some() {
-                self.final_sound.extend(mix.iter().map(|m| m.clamp(-1.0, 1.0)));
+                self.final_sound.extend(mix.iter().map(|&m| mixed(m)));
             }
             self.samples = target;
         }
@@ -682,15 +736,31 @@ impl Recorder {
     }
 }
 
+// Runs on every exit of the recording thread except an abort, and release builds abort on a panic.
 impl Drop for Recorder {
     fn drop(&mut self) {
         self.shared.state().ended = true;
+        let deadline = Instant::now() + CATCH_UP_LIMIT;
+        let mut r = Ok(());
         if let (Some(w), Some(last)) = (self.final_w.as_mut(), self.last_final.as_ref()) {
-            let r = (self.final_next..self.written).try_for_each(|i| w.write_frame(last, i));
-            self.final_next = self.written;
-            self.quietly(r);
+            // Waiting while the writer is behind keeps at most MAX_BEHIND repeats queued at once.
+            while r.is_ok() && self.final_next < self.written {
+                if w.frames_behind() < MAX_BEHIND {
+                    r = w.write_frame(last, self.final_next);
+                    self.final_next += 1;
+                } else if Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                } else {
+                    break;
+                }
+            }
         }
-        let r = self.feed_final_sound(true);
+        let short = self.written - self.final_next;
+        if r.is_ok() && short > 0 && self.final_w.is_some() {
+            self.note(format!("final.mp4 is {short} frames short"));
+        }
+        self.quietly(r);
+        let r = self.feed_final_sound(short <= 0);
         self.quietly(r);
         for mut w in [self.screen_w.take(), self.final_w.take(), self.cam_w.take()].into_iter().flatten() {
             let r = w.finish();
@@ -705,14 +775,22 @@ impl Drop for Recorder {
         }
         self.cam = None;
         let folder = &self.shared.folder;
-        let mut s = self.shared.state();
+        let s = self.shared.state();
         let files = s.file.sources.iter().map(|e| e.file.clone()).filter(|f| folder.join(f).exists()).collect();
         let notes = s.file.notes.clone();
         let result = RecordingResult { folder: folder.clone(), files, dropped_frames: s.file.dropped_frames, notes };
-        self.shared.save(&mut s, &self.clock);
-        drop(s);
+        self.shared.save(s, &self.clock);
         *lock(&self.shared.result) = Some(result);
         self.shared.done.notify_all();
+    }
+}
+
+/// A NaN from a broken source would pass through `clamp`, so it becomes silence.
+fn mixed(m: f32) -> f32 {
+    if m.is_nan() {
+        0.0
+    } else {
+        m.clamp(-1.0, 1.0)
     }
 }
 
@@ -727,7 +805,12 @@ fn logged(l: &Layout) -> Layout {
 
 /// Two recordings started in the same second get "name (2)" and so on. Checking and creating is one step.
 fn create_folder(root: &Path, name: &str) -> Result<PathBuf> {
-    fs::create_dir_all(root).map_err(Error::Io)?;
+    // Folders this call makes, deepest first, so a failure deeper down can remove them again.
+    let made: Vec<&Path> = root.ancestors().take_while(|p| !p.exists()).collect();
+    if let Err(e) = fs::create_dir_all(root) {
+        made.iter().for_each(|p| _ = fs::remove_dir(p));
+        return Err(Error::Io(e));
+    }
     let mut n = 1;
     loop {
         let folder = root.join(if n == 1 { name.to_string() } else { format!("{name} ({n})") });
@@ -784,6 +867,60 @@ mod tests {
         let names: Vec<_> = (0..3).map(|_| create_folder(&root, "a").unwrap()).collect();
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(names, [root.join("a"), root.join("a (2)"), root.join("a (3)")]);
+    }
+
+    #[test]
+    fn slow_session_json_write_leaves_the_state_lock_free() {
+        let folder = std::env::temp_dir().join(format!("recorder-session-save-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let file = SessionFile {
+            version: 1,
+            started_at: String::new(),
+            frame_size: FULL_HD,
+            frame_rate: 30,
+            target_kind: String::new(),
+            sources: Vec::new(),
+            layout_changes: Vec::new(),
+            pauses: Vec::new(),
+            dropped_frames: 0,
+            notes: Vec::new(),
+        };
+        let shared = Arc::new(Shared {
+            folder: folder.clone(),
+            state: Mutex::new(State { file, layout: Layout::default(), ended: false, disk_noted: false, saves: 0 }),
+            saved: Mutex::new(0),
+            stop: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            result: Mutex::new(None),
+            done: Condvar::new(),
+        });
+        // Holding the write lock stands in for a disk that takes long to write.
+        let writing = lock(&shared.saved);
+        let saver = {
+            let shared = shared.clone();
+            thread::spawn(move || shared.note("a note".into(), &RecordingClock::new(30, Box::new(|| Duration::ZERO))))
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(shared.state.try_lock().is_ok());
+        drop(writing);
+        saver.join().unwrap();
+        let text = fs::read_to_string(folder.join("session.json")).unwrap();
+        fs::remove_dir_all(&folder).unwrap();
+        assert!(text.contains("a note"), "{text}");
+    }
+
+    #[test]
+    fn mixed_sound_has_no_nan_and_stays_in_range() {
+        assert_eq!(0.0, mixed(f32::NAN));
+        assert_eq!((1.0, -1.0, 0.5), (mixed(2.0), mixed(-3.0), mixed(0.5)));
+    }
+
+    #[test]
+    fn failed_folder_leaves_no_parent_folders() {
+        let root = std::env::temp_dir().join(format!("recorder-session-parents-{}", std::process::id()));
+        // `<` is not allowed in a Windows file name, so the deepest folder fails after its parents were made.
+        assert!(create_folder(&root.join("sub").join("a<b"), "a").is_err());
+        assert!(!root.exists());
     }
 
     #[test]

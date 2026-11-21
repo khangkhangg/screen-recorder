@@ -286,9 +286,17 @@ fn outputs_have_the_screen_and_frame_sizes() {
 fn camera_file_is_the_whole_camera_frame() {
     let mut s = setup();
     let cam = image(&s.device, 1280, 720, |x| if x < 640 { RED } else { GREEN });
-    let out = s.compositor.draw_camera_file(&cam).unwrap();
+    let out = s.compositor.draw_camera_file(&cam, PixelSize { width: 1280, height: 720 }).unwrap();
     assert_eq!(texture_size(out), (1280, 720));
     // Not mirrored and not cropped.
     assert_color(RED, pixel(&s.device, out, 5, 5));
     assert_color(GREEN, pixel(&s.device, out, 1275, 715));
+}
+
+#[test]
+fn camera_file_has_the_writer_size() {
+    let mut s = setup();
+    let cam = solid(&s.device, 641, 481, RED);
+    let out = s.compositor.draw_camera_file(&cam, PixelSize { width: 640, height: 480 }).unwrap();
+    assert_eq!(texture_size(out), (640, 480));
 }
