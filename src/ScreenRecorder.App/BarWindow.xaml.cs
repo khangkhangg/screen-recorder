@@ -42,14 +42,7 @@ public sealed partial class BarWindow : Window
         presenter.IsAlwaysOnTop = true;
         AppWindow.SetPresenter(presenter);
 
-        if (new UISettings().AdvancedEffectsEnabled && !new AccessibilitySettings().HighContrast)
-            SystemBackdrop = new DesktopAcrylicBackdrop();
-        else
-        {
-            Root.Background = (Brush)Application.Current.Resources["SolidBackgroundFillColorBaseBrush"];
-            Root.BorderBrush = (Brush)Application.Current.Resources["ControlStrongStrokeColorDefaultBrush"];
-            Root.BorderThickness = new Thickness(1);
-        }
+        ApplyLook(this, Root);
 
         CameraToggle.IsChecked = settings.Layout.Camera.Visible;
         MicToggle.IsChecked = settings.Mic;
@@ -64,9 +57,11 @@ public sealed partial class BarWindow : Window
         ShowSource("Desktop");
         confirm = DispatcherQueue.CreateTimer();
         confirm.IsRepeating = false;
+        confirm.Interval = TimeSpan.FromSeconds(1);
         confirm.Tick += (_, _) => EndConfirmation();
 
         cameraOverlay = new CameraOverlayWindow();
+        card = new ScreenshotCard();
         logoOverlay = new LogoOverlayWindow();
         cameraOverlay.Changed += c => Save(settings with { Layout = settings.Layout with { Camera = c } });
         // the overlays come back on release, placed for the new region
@@ -79,7 +74,7 @@ public sealed partial class BarWindow : Window
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); };
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); card.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += (_, e) =>
@@ -100,7 +95,7 @@ public sealed partial class BarWindow : Window
     readonly RegionFrameWindow frame = new();
     readonly DispatcherQueueTimer follow, confirm;
     string sourceLabel = "Desktop";
-    string? lastShot;
+    readonly ScreenshotCard card;
     RectF? overlayArea;
 
     static RectF? AreaOf(CaptureTarget target) => TargetPicker.AreaOnScreen(target, NativeMethods.MonitorRect, NativeMethods.WindowRect);
@@ -296,39 +291,36 @@ public sealed partial class BarWindow : Window
             AutomationProperties.SetName(toggle, NameWithState(name, toggle.IsChecked == true));
     }
 
-    public static string ConfirmationText(bool copied) => copied ? "Screenshot saved and copied" : "Screenshot saved";
-
     // While recording only the Screenshot button shows a check, so the timer stays visible.
     void ShowConfirmation(ScreenshotResult shot)
     {
-        lastShot = shot.Path;
-        confirm.Stop();
         if (state == RecorderState.Idle)
         {
-            ConfirmText.Text = ConfirmationText(shot.Copied);
-            Bar.Visibility = Visibility.Collapsed;
-            Confirmation.Visibility = Visibility.Visible;
-            FitSize();
+            card.Show(shot.Path, shot.Copied);
+            return;
         }
-        else LiveScreenshotIcon.Glyph = "\uE73E";
-        confirm.Interval = TimeSpan.FromSeconds(state == RecorderState.Idle ? 3 : 1);
+        LiveScreenshotIcon.Glyph = "E73E";
+        confirm.Stop();
         confirm.Start();
     }
 
     void EndConfirmation()
     {
         confirm.Stop();
-        LiveScreenshotIcon.Glyph = "\uE722";
-        if (Confirmation.Visibility == Visibility.Collapsed) return;
-        Confirmation.Visibility = Visibility.Collapsed;
-        Bar.Visibility = Visibility.Visible;
-        FitSize();
+        LiveScreenshotIcon.Glyph = "E722";
     }
 
-    void ShowInFolder_Click(object sender, RoutedEventArgs e)
+    // Acrylic, or a solid background with a visible border when transparency is off or high contrast is on.
+    internal static void ApplyLook(Window window, Border root)
     {
-        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{lastShot}\"");
-        EndConfirmation();
+        if (new UISettings().AdvancedEffectsEnabled && !new AccessibilitySettings().HighContrast)
+            window.SystemBackdrop = new DesktopAcrylicBackdrop();
+        else
+        {
+            root.Background = (Brush)Application.Current.Resources["SolidBackgroundFillColorBaseBrush"];
+            root.BorderBrush = (Brush)Application.Current.Resources["ControlStrongStrokeColorDefaultBrush"];
+            root.BorderThickness = new Thickness(1);
+        }
     }
 
     void OpenFolder_Click(object sender, RoutedEventArgs e)
@@ -371,7 +363,6 @@ public sealed partial class BarWindow : Window
         bool idle = s == RecorderState.Idle, countdown = s == RecorderState.Countdown, live = !idle && !countdown;
         Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
         RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
-        if (!idle && Confirmation.Visibility == Visibility.Visible) EndConfirmation();
         foreach (var c in new UIElement[] { ScreenshotButton, SourceSeparator, SourceSwitch, MicToggle, SoundToggle, MoreSeparator, MoreButton }) c.Visibility = Shown(idle);
         LiveScreenshotButton.Visibility = Shown(!idle);
         RecordButton.Visibility = Shown(!live);

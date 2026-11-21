@@ -40,6 +40,7 @@ static class NativeMethods
     [DllImport("user32.dll")] static extern nint SendMessageW(nint hwnd, uint msg, nint wParam, nint lParam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int MessageBoxW(nint hwnd, string text, string caption, uint type);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hwnd);
+    [DllImport("user32.dll")] public static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint pid);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] static extern int DwmGetWindowRect(nint hwnd, int attribute, out Rect value, int size);
@@ -175,6 +176,30 @@ static class NativeMethods
     {
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
         SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct ShFileOp
+    {
+        public nint Hwnd;
+        public uint Func;
+        public string From;
+        public string? To;
+        public ushort Flags;
+        public int Aborted;
+        public nint NameMappings;
+        public string? Title;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperationW(ref ShFileOp op);
+
+    // Moves the file to the Recycle Bin without asking. If it cannot go there, Windows asks before deleting it for good.
+    public static bool Recycle(string path)
+    {
+        const uint FO_DELETE = 3;
+        const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
+        var op = new ShFileOp { Func = FO_DELETE, From = path + "\0", Flags = FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI | FOF_WANTNUKEWARNING };
+        return SHFileOperationW(ref op) == 0 && op.Aborted == 0;
     }
 
     // Hands the drag to Windows, and returns when the user lets go.

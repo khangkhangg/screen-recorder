@@ -12,7 +12,7 @@ public static class Screenshot
     public static Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, bool copyToClipboard = true) =>
         CaptureAsync(target, outputRoot, copyToClipboard ? CopyToClipboard : null);
 
-    static async Task CopyToClipboard(string path)
+    public static async Task CopyToClipboard(string path)
     {
         var data = new DataPackage();
         data.SetBitmap(RandomAccessStreamReference.CreateFromFile(await StorageFile.GetFileFromPathAsync(path)));
@@ -47,6 +47,18 @@ public static class Screenshot
             }
         catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
         return new(path, copied);
+    }
+
+    // Writes a new PNG; the source file is only read.
+    public static async Task CropAsync(string source, string target, int x, int y, int width, int height)
+    {
+        var device = CanvasDevice.GetSharedDevice();
+        CanvasBitmap bitmap;
+        using (var input = File.OpenRead(source).AsRandomAccessStream()) bitmap = await CanvasBitmap.LoadAsync(device, input);
+        using (bitmap)
+        using (var crop = CanvasBitmap.CreateFromBytes(device, bitmap.GetPixelBytes(x, y, width, height), width, height, bitmap.Format))
+        using (var output = new FileStream(target, FileMode.CreateNew).AsRandomAccessStream())
+            await crop.SaveAsync(output, CanvasBitmapFileFormat.Png);
     }
 
     public static string UniquePath(string folder, DateTime time)

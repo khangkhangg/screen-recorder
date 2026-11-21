@@ -23,11 +23,6 @@ public class ToolbarTests
         Assert.Equal(expected, BarWindow.LogoAction(path, visible));
 
     [Theory]
-    [InlineData(true, "Screenshot saved and copied")]
-    [InlineData(false, "Screenshot saved")]
-    public void Confirmation_text(bool copied, string text) => Assert.Equal(text, BarWindow.ConfirmationText(copied));
-
-    [Theory]
     [InlineData(true, "Camera, on")]
     [InlineData(false, "Camera, off")]
     public void Name_with_state(bool on, string name) => Assert.Equal(name, BarWindow.NameWithState("Camera", on));
