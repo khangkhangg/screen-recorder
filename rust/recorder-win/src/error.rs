@@ -45,7 +45,6 @@ pub(crate) fn win(e: windows::core::Error, variant: fn(String) -> Error, sentenc
 }
 
 /// Like `win`, for file operations: disk and file errors, such as a full disk, become `Io`.
-#[cfg_attr(not(test), expect(dead_code, reason = "the encoder task writes the first file"))]
 pub(crate) fn win_file(e: windows::core::Error, variant: fn(String) -> Error, sentence: &str) -> Error {
     let code = e.code().0 as u32;
     if (code >> 16) & 0x7FF == FACILITY_WIN32 && FILE_ERRORS.contains(&(code & 0xFFFF)) {
