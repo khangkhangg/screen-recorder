@@ -87,13 +87,15 @@ public sealed partial class BarWindow : Window
             Quit();
         };
         RegisterHotkeys();
-        Root.ActualThemeChanged += (_, _) => ShowSource(sourceLabel);
+        Root.ActualThemeChanged += (_, _) => { ShowSource(sourceLabel); frame.Redraw(); };
+        uiSettings.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(frame.Redraw); // the accent color
         Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
     }
 
     readonly CameraOverlayWindow cameraOverlay;
     readonly LogoOverlayWindow logoOverlay;
     readonly RegionFrameWindow frame = new();
+    readonly UISettings uiSettings = new();
     readonly DispatcherQueueTimer follow, confirm;
     string sourceLabel = "Desktop";
     readonly ScreenshotCard card;

@@ -42,7 +42,7 @@ public static class RegionFrame
         ];
         var w = Math.Min(tabWidth, region.Width);
         var inside = strips[0].Y - tabHeight < monitor.Y;
-        var tab = Fit(Math.Max(region.X, Math.Min(region.X + Px(30), right - w)), inside ? region.Y : strips[0].Y - tabHeight, w, tabHeight);
+        var tab = Fit(Math.Max(region.X, Math.Min(region.X + Px(30), right - w)), inside ? strips[0].Y + strips[0].Height : strips[0].Y - tabHeight, w, tabHeight);
 
         var grabs = new List<(FrameGrip, RectInt32)> { (FrameGrip.Move, tab) };
         foreach (var (left, top) in Corners)

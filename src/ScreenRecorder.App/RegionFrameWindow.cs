@@ -40,6 +40,7 @@ public sealed class RegionFrameWindow : Window
     RectInt32 region, monitor, start;
     FrameLayout? layout;
     bool idle, pressed, dragging;
+    double scale;
     string? text;
     FrameGrip held;
     PointInt32 grab;
@@ -84,7 +85,7 @@ public sealed class RegionFrameWindow : Window
         // they sit above the bar, so a close sent to the app's first window must not end them; Close() still does
         AppWindow.Closing += (_, e) => e.Cancel = true;
         input.AppWindow.Closing += (_, e) => e.Cancel = true;
-        Closed += (_, _) => input.Close();
+        Closed += (_, _) => { escape.Stop(); input.Close(); };
     }
 
     static Brush Resource(string key) => (Brush)Application.Current.Resources[key];
@@ -95,11 +96,18 @@ public sealed class RegionFrameWindow : Window
     {
         if (dragging && idle) return;
         Cancel();
-        if (layout is not null && hmonitor == this.hmonitor && region.Equals(this.region) && idle == this.idle && text == this.text) return;
+        if (layout is not null && hmonitor == this.hmonitor && region.Equals(this.region) && idle == this.idle && text == this.text
+            && NativeMethods.MonitorScale(hmonitor) == scale) return;
         if (NativeMethods.MonitorRect(hmonitor) is not { } m) { Hide(); return; }
         (this.hmonitor, this.idle, this.text) = (hmonitor, idle, text);
         monitor = new RectInt32((int)m.X, (int)m.Y, (int)m.Width, (int)m.Height);
         Draw(region);
+    }
+
+    // Theme brushes and the monitor scale are read when drawing, so a theme or accent change needs a redraw.
+    public void Redraw()
+    {
+        if (layout is not null) Draw(region);
     }
 
     public void Hide()
@@ -113,7 +121,7 @@ public sealed class RegionFrameWindow : Window
     void Draw(RectInt32 r)
     {
         region = r;
-        var scale = NativeMethods.MonitorScale(hmonitor);
+        scale = NativeMethods.MonitorScale(hmonitor);
         int Px(double dips) => (int)Math.Ceiling(dips * scale);
         double Width(TextBlock t) { t.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity)); return 8 + t.DesiredSize.Width; }
 
