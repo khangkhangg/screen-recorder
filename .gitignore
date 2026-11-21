@@ -483,3 +483,4 @@ $RECYCLE.BIN/
 .claude/
 .superpowers/
 dist/
+/rust/target/
