@@ -6,6 +6,7 @@ mod factory;
 pub mod fakes;
 mod gfx;
 mod screen;
+pub mod screenshot;
 mod session;
 mod targets;
 mod video;
