@@ -26,7 +26,10 @@ pub fn read(path: &Path) -> MediaInfo {
     let has_audio = unsafe { reader(path).GetNativeMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32, 0) }.is_ok();
     let audio = if has_audio { samples(path, MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32) } else { Vec::new() };
     video.sort();
-    let constant = video.len() > 1 && video.windows(2).all(|p| (p[1].0 - p[0].0 - (video[1].0 - video[0].0)).abs() <= 1);
+    // Times are whole 100 ns units, so spacing and durations may differ by 1.
+    let constant = video.len() > 1
+        && video.windows(2).all(|p| (p[1].0 - p[0].0 - (video[1].0 - video[0].0)).abs() <= 1)
+        && video.iter().all(|s| (s.1 - video[0].1).abs() <= 1);
     MediaInfo {
         duration: length(&video),
         frame_count: video.len(),

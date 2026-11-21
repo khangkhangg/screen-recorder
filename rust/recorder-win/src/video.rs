@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -23,7 +24,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_D3D_MANAGER, MF_TRANSCODE_CONTAINERTYPE,
     MF_TRANSFORM_ASYNC_UNLOCK,
 };
-use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED};
 
 use crate::error::{win, win_file, Error, Result};
 use crate::gfx::Device;
@@ -48,10 +49,11 @@ pub struct VideoWriter {
     with_audio: bool,
     hardware: bool,
     jobs: Option<Sender<Job>>,
-    worker: Option<JoinHandle<Result<()>>>,
+    /// Ends with the result of starting COM.
+    worker: Option<JoinHandle<windows::core::Result<()>>>,
     shared: Arc<Shared>,
-    /// True once an encoder error has been returned to the caller.
-    failed: bool,
+    /// The worker's first error, kept to return again on every later call.
+    failed: Option<Error>,
 }
 
 struct Shared {
@@ -85,23 +87,48 @@ impl VideoWriter {
         let d2d_lock = unsafe { device.d2d().GetFactory() }
             .and_then(|f| f.cast::<ID2D1Multithread>())
             .map_err(|e| win(e, Error::Device, "The graphics device could not be shared with the encoder."))?;
+        // The session always writes into a new folder, so an existing file is a mistake. Creating the
+        // file here also means a failure below deletes only a file this call made.
+        File::create_new(path).map_err(Error::Io)?;
         let shared = Arc::new(Shared { behind: AtomicI64::new(0), error: Mutex::new(None) });
         let (jobs, received) = mpsc::channel();
         let (ready, opened) = mpsc::channel();
-        let (path, d3d, worker_shared) = (path.to_path_buf(), device.d3d().clone(), shared.clone());
-        let worker = thread::spawn(move || {
-            let sink = match Sink::open(&path, size, frame_rate, &d3d, hardware, with_audio) {
+        let (sink_path, d3d, worker_shared) = (path.to_path_buf(), device.d3d().clone(), shared.clone());
+        let work = move || {
+            let sink = match Sink::open(&sink_path, size, frame_rate, &d3d, hardware, with_audio) {
                 Ok(sink) => sink,
                 Err(e) => {
-                    let _ = std::fs::remove_file(&path);
                     let _ = ready.send(Err(e));
-                    return Ok(());
+                    return;
                 }
             };
             let _ = ready.send(Ok(sink.uses_hardware));
-            sink.run(received, &worker_shared)
+            sink.run(received, &worker_shared);
+        };
+        let spawned = thread::Builder::new().name("video writer".into()).spawn(move || {
+            // .NET gave every thread COM. Without it, Media Foundation here would depend on another thread
+            // holding the multithreaded apartment open.
+            let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok();
+            if com.is_ok() {
+                // Calling `work` consumes it, so every COM object it holds is released before COM is.
+                work();
+                unsafe { CoUninitialize() };
+            }
+            com
         });
-        let uses_hardware = opened.recv().unwrap_or_else(|_| Err(stopped()))?;
+        let started = match spawned {
+            Ok(worker) => match opened.recv() {
+                Ok(opened) => opened.map(|uses_hardware| (worker, uses_hardware)),
+                Err(_) => Err(match worker.join() {
+                    Ok(Err(e)) => win(e, Error::Encoder, "The video encoder could not start."),
+                    _ => stopped(),
+                }),
+            },
+            Err(e) => Err(Error::Encoder(format!("The video encoder could not start. {e}"))),
+        };
+        let (worker, uses_hardware) = started.inspect_err(|_| {
+            let _ = std::fs::remove_file(path);
+        })?;
         Ok(VideoWriter {
             device: device.clone(),
             d2d_lock,
@@ -110,7 +137,7 @@ impl VideoWriter {
             jobs: Some(jobs),
             worker: Some(worker),
             shared,
-            failed: false,
+            failed: None,
         })
     }
 
@@ -118,14 +145,12 @@ impl VideoWriter {
         self.hardware
     }
 
-    /// Returns an encoder error from the worker once, then a short error on every later call.
+    /// Returns the worker's first error, again on every later call.
     fn check(&mut self) -> Result<()> {
-        if self.failed {
-            return Err(Error::Encoder("The recording stopped after an earlier error.".into()));
+        if self.failed.is_none() {
+            self.failed = self.shared.error.lock().unwrap_or_else(|e| e.into_inner()).take();
         }
-        let error = self.shared.error.lock().unwrap_or_else(|e| e.into_inner()).take();
-        self.failed = error.is_some();
-        error.map_or(Ok(()), Err)
+        self.failed.as_ref().map_or(Ok(()), |e| Err(replay(e)))
     }
 
     fn send(&mut self, job: Job) -> Result<()> {
@@ -153,7 +178,11 @@ impl VideoOut for VideoWriter {
                     self.d2d_lock.Leave();
                 }
                 self.shared.behind.fetch_add(1, Ordering::SeqCst);
-                self.send(Job::Video(copy, index))
+                let sent = self.send(Job::Video(copy, index));
+                if sent.is_err() {
+                    self.shared.behind.fetch_sub(1, Ordering::SeqCst);
+                }
+                sent
             })
     }
 
@@ -174,10 +203,12 @@ impl VideoOut for VideoWriter {
 
     fn finish(&mut self) -> Result<()> {
         self.jobs = None;
-        let Some(worker) = self.worker.take() else { return Ok(()) };
-        let result = worker.join().unwrap_or_else(|_| Err(stopped()));
-        self.check()?;
-        result
+        if let Some(worker) = self.worker.take() {
+            if !matches!(worker.join(), Ok(Ok(()))) {
+                self.shared.error.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(stopped);
+            }
+        }
+        self.check()
     }
 }
 
@@ -189,6 +220,20 @@ impl Drop for VideoWriter {
 
 fn stopped() -> Error {
     Error::Encoder("The video encoder stopped unexpectedly.".into())
+}
+
+/// Builds an equal error again, because `io::Error` cannot be cloned.
+fn replay(e: &Error) -> Error {
+    match e {
+        Error::Io(io) => Error::Io(
+            io.raw_os_error().map_or_else(|| std::io::Error::new(io.kind(), io.to_string()), std::io::Error::from_raw_os_error),
+        ),
+        Error::CaptureUnavailable(m) => Error::CaptureUnavailable(m.clone()),
+        Error::Device(m) => Error::Device(m.clone()),
+        Error::Encoder(m) => Error::Encoder(m.clone()),
+        Error::NotSupported(m) => Error::NotSupported(m.clone()),
+        Error::Invalid(m) => Error::Invalid(m.clone()),
+    }
 }
 
 /// Win32 errors such as a full disk become `Error::Io`, so callers handle them like other file errors.
@@ -290,7 +335,7 @@ impl Sink {
 
     /// The sink writer blocks audio that is ahead of the video, while that video waits behind it in this
     /// queue. So audio waits here until video up to its time has been written.
-    fn run(mut self, jobs: Receiver<Job>, shared: &Shared) -> Result<()> {
+    fn run(mut self, jobs: Receiver<Job>, shared: &Shared) {
         let mut held: VecDeque<(Vec<i16>, i64)> = VecDeque::new();
         for job in jobs {
             match job {
@@ -310,14 +355,11 @@ impl Sink {
         for (pcm, first) in held {
             self.attempt(shared, |s| s.write_audio(&pcm, first));
         }
-        if self.failed {
-            return Ok(());
-        }
-        match unsafe { self.writer.Finalize() } {
+        self.attempt(shared, |s| match unsafe { s.writer.Finalize() } {
             // A writer closed before its first sample has nothing to finalize.
-            Err(e) if e.code() != MF_E_SINK_NO_SAMPLES_PROCESSED => Err(write_error(e)),
-            _ => Ok(()),
-        }
+            Err(e) if e.code() == MF_E_SINK_NO_SAMPLES_PROCESSED => Ok(()),
+            other => other,
+        });
     }
 
     /// Runs one write unless an earlier one failed, and keeps the first error for the caller.
@@ -465,4 +507,30 @@ fn open(activate: &IMFActivate, size: PixelSize) -> windows::core::Result<IMFTra
         transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
     }
     Ok(transform)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_disk_full(result: Result<()>) -> bool {
+        matches!(result, Err(Error::Io(e)) if e.raw_os_error() == Some(112))
+    }
+
+    #[test]
+    #[ignore = "needs the desktop"]
+    fn a_disk_error_is_returned_on_every_later_call() {
+        crate::init_process().unwrap();
+        let path = std::env::temp_dir().join(format!("recorder-video-unit-{}.mp4", std::process::id()));
+        let device = Device::new().unwrap();
+        let mut writer = VideoWriter::create(&path, PixelSize { width: 1280, height: 720 }, 60, &device, false, true).unwrap();
+        // Stands in for the worker hitting a full disk (Windows error 112).
+        *writer.shared.error.lock().unwrap() = Some(Error::Io(std::io::Error::from_raw_os_error(112)));
+        assert!(is_disk_full(writer.write_audio(&[0.0; 2], 0)));
+        assert!(is_disk_full(writer.write_audio(&[0.0; 2], 0)));
+        assert!(is_disk_full(writer.finish()));
+        assert!(is_disk_full(writer.finish()));
+        drop(writer);
+        std::fs::remove_file(&path).unwrap();
+    }
 }
