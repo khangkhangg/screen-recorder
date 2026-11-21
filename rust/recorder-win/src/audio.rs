@@ -164,16 +164,23 @@ fn start(
     };
     let flags = flags | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     let begin = || -> windows::core::Result<IAudioCaptureClient> {
-        unsafe {
-            // A 100 ms buffer, in 100 ns units.
-            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1_000_000, 0, &format, None)?;
-            let capture = client.GetService::<IAudioCaptureClient>()?;
-            client.Start()?;
-            Ok(capture)
-        }
+        // A 100 ms buffer, in 100 ns units.
+        unsafe { client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1_000_000, 0, &format, None) }?;
+        let capture = unsafe { client.GetService::<IAudioCaptureClient>() }?;
+        unsafe { client.Start() }?;
+        Ok(capture)
     };
-    let capture = begin().map_err(|e| win(e, Error::Device, "Windows could not start the sound capture."))?;
+    let loopback = flags & AUDCLNT_STREAMFLAGS_LOOPBACK != 0;
+    let capture = begin().map_err(|e| start_error(e, loopback))?;
     Ok((client, capture))
+}
+
+/// Some PCs refuse a blocked microphone only at `Initialize`, not at `Activate`.
+fn start_error(e: windows::core::Error, loopback: bool) -> Error {
+    if !loopback && e.code() == E_ACCESSDENIED {
+        return Error::Device(MIC_BLOCKED.into());
+    }
+    win(e, Error::Device, "Windows could not start the sound capture.")
 }
 
 /// Polls every 10 ms until the source is dropped. Any error ends capture and marks the source lost.
@@ -210,17 +217,39 @@ fn drain(capture: &IAudioCaptureClient, shared: &Shared) -> windows::core::Resul
 fn list_mics() -> windows::core::Result<Vec<(String, String)>> {
     let devices: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
     let all = unsafe { devices.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }?;
-    (0..unsafe { all.GetCount() }?).map(|i| unsafe { all.Item(i) }.and_then(|d| describe(&d))).collect()
+    // A device that fails to describe itself is skipped, so the others stay usable.
+    Ok((0..unsafe { all.GetCount() }?).filter_map(|i| unsafe { all.Item(i) }.and_then(|d| describe(&d)).ok()).collect())
 }
 
 fn describe(device: &IMMDevice) -> windows::core::Result<(String, String)> {
-    unsafe {
-        let raw = device.GetId()?;
-        let id = raw.to_string();
-        CoTaskMemFree(Some(raw.0 as *const _));
-        let mut value = device.OpenPropertyStore(STGM_READ)?.GetValue(&PKEY_Device_FriendlyName)?;
-        let name = PropVariantToBSTR(&value);
-        let _ = PropVariantClear(&mut value);
-        Ok((id.map_err(|_| windows::core::Error::empty())?, name?.to_string()))
+    let raw = unsafe { device.GetId() }?;
+    let id = unsafe { raw.to_string() };
+    unsafe { CoTaskMemFree(Some(raw.0 as *const _)) };
+    let mut value = unsafe { device.OpenPropertyStore(STGM_READ)?.GetValue(&PKEY_Device_FriendlyName) }?;
+    let name = unsafe { PropVariantToBSTR(&value) };
+    let _ = unsafe { PropVariantClear(&mut value) };
+    Ok((id.map_err(|_| windows::core::Error::empty())?, name?.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::E_FAIL;
+
+    fn start_text(code: windows::core::HRESULT, loopback: bool) -> String {
+        start_error(windows::core::Error::from_hresult(code), loopback).to_string()
+    }
+
+    #[test]
+    fn blocked_mic_at_start_gives_the_privacy_message() {
+        assert_eq!(start_text(E_ACCESSDENIED, false), MIC_BLOCKED);
+    }
+
+    #[test]
+    fn other_start_failures_keep_the_plain_sentence() {
+        for (code, loopback) in [(E_ACCESSDENIED, true), (E_FAIL, false)] {
+            let text = start_text(code, loopback);
+            assert!(text.starts_with("Windows could not start the sound capture."), "{text}");
+        }
     }
 }

@@ -120,11 +120,19 @@ fn mic_opens_or_fails_with_a_plain_message() {
     println!("{mics:?}");
     match AudioSource::open_mic(None) {
         Ok(mut src) => {
-            thread::sleep(Duration::from_millis(200));
-            assert_eq!(src.read(&mut vec![0.0; 4800]) % 2, 0);
+            // A working microphone delivers samples even in silence.
+            let watch = Instant::now();
+            let mut n = 0;
+            while n == 0 && watch.elapsed() < Duration::from_secs(1) {
+                thread::sleep(Duration::from_millis(50));
+                n = src.read(&mut vec![0.0; 4800]);
+            }
+            println!("opened, read {n} floats");
+            assert!(n > 0 && n % 2 == 0, "{n}");
         }
         Err(e) => {
             let text = e.to_string();
+            println!("{}: {text}", if text.contains("privacy") { "blocked by privacy" } else { "no microphone" });
             // No microphone, or Windows privacy settings block it.
             assert!(
                 if mics.is_empty() { text.contains("No microphone") } else { text.contains("privacy") },
