@@ -5,9 +5,11 @@ using Windows.Storage.Streams;
 
 namespace ScreenRecorder.Capture;
 
+public record ScreenshotResult(string Path, bool Copied);
+
 public static class Screenshot
 {
-    public static async Task<string> CaptureAsync(CaptureTarget target, string outputRoot, bool copyToClipboard = true)
+    public static async Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, bool copyToClipboard = true)
     {
         using var source = ScreenSource.Create(target, CanvasDevice.GetSharedDevice());
         var deadline = DateTime.UtcNow.AddSeconds(2);
@@ -24,6 +26,7 @@ public static class Screenshot
         using (var stream = new FileStream(path, FileMode.CreateNew).AsRandomAccessStream())
             await frame!.SaveAsync(stream, CanvasBitmapFileFormat.Png);
 
+        var copied = false;
         if (copyToClipboard)
         {
             try
@@ -32,10 +35,11 @@ public static class Screenshot
                 data.SetBitmap(RandomAccessStreamReference.CreateFromFile(await StorageFile.GetFileFromPathAsync(path)));
                 Clipboard.SetContent(data);
                 Clipboard.Flush();
+                copied = true;
             }
             catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
         }
-        return path;
+        return new(path, copied);
     }
 
     public static string UniquePath(string folder, DateTime time)

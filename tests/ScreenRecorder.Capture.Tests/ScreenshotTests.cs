@@ -19,8 +19,9 @@ public class ScreenshotTests
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         try
         {
-            var path = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), temp, copyToClipboard: false);
-            Assert.Equal((320u, 200u), await Size(path));
+            var shot = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), temp, copyToClipboard: false);
+            Assert.Equal((320u, 200u), await Size(shot.Path));
+            Assert.False(shot.Copied);
         }
         finally { Directory.Delete(temp, true); }
     }
@@ -31,8 +32,8 @@ public class ScreenshotTests
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         try
         {
-            var path = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), Path.Combine(temp, "new", "sub"), copyToClipboard: false);
-            Assert.True(File.Exists(path));
+            var shot = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), Path.Combine(temp, "new", "sub"), copyToClipboard: false);
+            Assert.True(File.Exists(shot.Path));
         }
         finally { Directory.Delete(temp, true); }
     }

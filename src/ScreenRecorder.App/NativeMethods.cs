@@ -50,7 +50,14 @@ static class NativeMethods
     [DllImport("gdi32.dll")] public static extern nint CreateEllipticRgn(int left, int top, int right, int bottom);
     [DllImport("gdi32.dll")] public static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int width, int height);
 
-    public static bool ExcludeFromCapture(nint hwnd) => SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    public static bool ExcludeFromCapture(nint hwnd)
+    {
+#if DEBUG
+        // lets a Debug build take pictures of its own windows; a Release build cannot be made visible
+        if (Environment.GetEnvironmentVariable("SCREENRECORDER_SHOW_IN_CAPTURE") == "1") return true;
+#endif
+        return SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
 
     // Monitor rectangles in physical pixels, primary first.
     public static List<(nint Hmonitor, Rect Bounds, bool Primary)> Monitors()
@@ -100,6 +107,7 @@ static class NativeMethods
     public static nint MakeOverlay(Window window, string name)
     {
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+        window.Title = name; // Task Manager lists every window, and the default title is "WinUI Desktop"
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(false, false);
         presenter.IsResizable = presenter.IsMaximizable = presenter.IsMinimizable = false;

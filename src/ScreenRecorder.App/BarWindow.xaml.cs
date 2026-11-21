@@ -5,6 +5,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Windows.Storage.Pickers;
@@ -14,6 +15,8 @@ using Windows.Graphics;
 using Windows.UI.ViewManagement;
 
 namespace ScreenRecorder.App;
+
+public enum LogoClick { Pick, Show, Hide }
 
 public sealed partial class BarWindow : Window
 {
@@ -56,7 +59,11 @@ public sealed partial class BarWindow : Window
             CameraShape.RoundedSquare => RoundedSquareItem,
             _ => SquareItem,
         }).IsChecked = true;
-        RemoveLogoItem.IsEnabled = settings.Layout.Logo.Path is not null;
+        ShowToggles();
+        ShowSource("Desktop");
+        confirm = DispatcherQueue.CreateTimer();
+        confirm.IsRepeating = false;
+        confirm.Tick += (_, _) => EndConfirmation();
 
         cameraOverlay = new CameraOverlayWindow();
         logoOverlay = new LogoOverlayWindow();
@@ -70,14 +77,13 @@ public sealed partial class BarWindow : Window
         Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
-        AppWindow.Closing += async (_, e) =>
+        AppWindow.Closing += (_, e) =>
         {
             // While starting or stopping, closing would leave a running session or an unfinished file.
             if (busy) { e.Cancel = true; return; }
             if (session is null) return;
             e.Cancel = true;
-            await StopRecording();
-            Close();
+            Quit();
         };
         RegisterHotkeys();
         Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
@@ -85,7 +91,8 @@ public sealed partial class BarWindow : Window
 
     readonly CameraOverlayWindow cameraOverlay;
     readonly LogoOverlayWindow logoOverlay;
-    readonly DispatcherQueueTimer follow;
+    readonly DispatcherQueueTimer follow, confirm;
+    string? lastShot;
     RectF? overlayArea;
 
     static RectF? AreaOf(CaptureTarget target) => TargetPicker.AreaOnScreen(target, NativeMethods.MonitorRect, NativeMethods.WindowRect);
@@ -147,36 +154,49 @@ public sealed partial class BarWindow : Window
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // position is a convenience, losing it is fine
     }
 
-    void TargetMenu_Opening(object? sender, object e)
+    void Desktop_Click(object sender, RoutedEventArgs e)
     {
-        TargetMenu.Items.Clear();
-
         var monitors = TargetPicker.Monitors();
-        if (monitors.Count == 1)
-            TargetMenu.Items.Add(Item("Desktop", new MonitorTarget(monitors[0].Hmonitor), "Desktop"));
-        else
+        if (monitors.Count == 1) { SetTarget(new MonitorTarget(monitors[0].Hmonitor), "Desktop"); return; }
+        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Bottom };
+        foreach (var m in monitors) menu.Items.Add(Item(m.Name, new MonitorTarget(m.Hmonitor), m.Name));
+        menu.ShowAt(DesktopSegment);
+    }
+
+    void Window_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Bottom };
+        foreach (var w in TargetPicker.Windows()) menu.Items.Add(Item(w.Title, new WindowTarget(w.Hwnd), w.Title));
+        if (menu.Items.Count == 0) menu.Items.Add(new MenuFlyoutItem { Text = "No windows to capture", IsEnabled = false });
+        menu.ShowAt(WindowSegment);
+    }
+
+    async void Region_Click(object sender, RoutedEventArgs e)
+    {
+        AppWindow.Hide();
+        // the overlays sit on top, so they would take the drag meant for the region picker
+        cameraOverlay.Hide();
+        logoOverlay.Hide();
+        try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
+        finally { AppWindow.Show(); UpdateOverlays(); }
+    }
+
+    public static int SegmentOf(CaptureTarget target) => target switch { WindowTarget => 1, RegionTarget => 2, _ => 0 };
+
+    // The selected segment looks raised, and its tooltip names the exact monitor or window.
+    void ShowSource(string label)
+    {
+        Button[] segments = [DesktopSegment, WindowSegment, RegionSegment];
+        string[] names = ["Desktop", "Window", "Region"];
+        var selected = SegmentOf(CurrentTarget);
+        for (var i = 0; i < segments.Length; i++)
         {
-            var desktop = new MenuFlyoutSubItem { Text = "Desktop" };
-            foreach (var m in monitors) desktop.Items.Add(Item(m.Name, new MonitorTarget(m.Hmonitor), m.Name));
-            TargetMenu.Items.Add(desktop);
+            var on = i == selected;
+            segments[i].Background = (Brush)Application.Current.Resources[on ? "ControlFillColorDefaultBrush" : "SubtleFillColorTransparentBrush"];
+            segments[i].BorderBrush = (Brush)Application.Current.Resources[on ? "ControlElevationBorderBrush" : "SubtleFillColorTransparentBrush"];
+            ToolTipService.SetToolTip(segments[i], on ? label : names[i]);
+            AutomationProperties.SetName(segments[i], on ? names[i] + ", selected" : names[i]);
         }
-
-        var window = new MenuFlyoutSubItem { Text = "Window" };
-        foreach (var w in TargetPicker.Windows()) window.Items.Add(Item(w.Title, new WindowTarget(w.Hwnd), w.Title));
-        if (window.Items.Count == 0) window.Items.Add(new MenuFlyoutItem { Text = "No windows to capture", IsEnabled = false });
-        TargetMenu.Items.Add(window);
-
-        var region = new MenuFlyoutItem { Text = "Region" };
-        region.Click += async (_, _) =>
-        {
-            AppWindow.Hide();
-            // the overlays sit on top, so they would take the drag meant for the region picker
-            cameraOverlay.Hide();
-            logoOverlay.Hide();
-            try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
-            finally { AppWindow.Show(); UpdateOverlays(); }
-        };
-        TargetMenu.Items.Add(region);
     }
 
     MenuFlyoutItem Item(string text, CaptureTarget target, string label)
@@ -189,7 +209,7 @@ public sealed partial class BarWindow : Window
     void SetTarget(CaptureTarget target, string label)
     {
         CurrentTarget = target;
-        TargetText.Text = label;
+        ShowSource(label);
         UpdateOverlays();
     }
 
@@ -197,13 +217,17 @@ public sealed partial class BarWindow : Window
     {
         var scale = Root.XamlRoot.RasterizationScale;
         Root.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        AppWindow.ResizeClient(new SizeInt32((int)Math.Ceiling(Root.DesiredSize.Width * scale), (int)Math.Ceiling(Root.DesiredSize.Height * scale)));
+        // ResizeClient keeps the client at least 123 pixels tall at 150%, so the outer size is set instead
+        AppWindow.Resize(new SizeInt32(
+            (int)Math.Ceiling(Root.DesiredSize.Width * scale) + AppWindow.Size.Width - AppWindow.ClientSize.Width,
+            (int)Math.Ceiling(Root.DesiredSize.Height * scale) + AppWindow.Size.Height - AppWindow.ClientSize.Height));
     }
 
     void Save(Settings s)
     {
         if (s.Layout != settings.Layout) session?.SetLayout(s.Layout);
         settings = s;
+        ShowToggles();
         UpdateOverlays();
         try { settings.Save(SettingsPath); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // the choice still holds for this run
@@ -219,185 +243,106 @@ public sealed partial class BarWindow : Window
     void Shape_Click(object sender, RoutedEventArgs e) =>
         Save(settings with { Layout = settings.Layout with { Camera = settings.Layout.Camera with { Shape = Enum.Parse<CameraShape>((string)((FrameworkElement)sender).Tag) } } });
 
-    async void PickLogo_Click(object sender, RoutedEventArgs e)
+    public static LogoClick LogoAction(string? path, bool visible) => path is null ? LogoClick.Pick : visible ? LogoClick.Hide : LogoClick.Show;
+
+    async void LogoToggle_Click(object sender, RoutedEventArgs e)
+    {
+        var logo = settings.Layout.Logo;
+        var action = LogoAction(logo.Path, logo.Visible);
+        if (action != LogoClick.Pick) { SaveLogo(logo with { Visible = action == LogoClick.Show }); return; }
+        ShowToggles(); // the toggle turns on only when a file is picked
+        await PickLogo();
+    }
+
+    async void PickLogo_Click(object sender, RoutedEventArgs e) => await PickLogo();
+
+    async Task PickLogo()
     {
         var picker = new FileOpenPicker(AppWindow.Id) { FileTypeFilter = { ".png", ".jpg", ".jpeg" } };
         if (await picker.PickSingleFileAsync() is not { } file) return;
-        Save(settings with { Layout = settings.Layout with { Logo = settings.Layout.Logo with { Visible = true, Path = file.Path } } });
-        RemoveLogoItem.IsEnabled = true;
+        SaveLogo(settings.Layout.Logo with { Visible = true, Path = file.Path });
     }
 
-    void RemoveLogo_Click(object sender, RoutedEventArgs e)
+    void RemoveLogo_Click(object sender, RoutedEventArgs e) => SaveLogo(settings.Layout.Logo with { Visible = false, Path = null });
+
+    void SaveLogo(LogoItem logo) => Save(settings with { Layout = settings.Layout with { Logo = logo } });
+
+    public static string NameWithState(string name, bool on) => $"{name}, {(on ? "on" : "off")}";
+
+    void ShowToggles()
     {
-        Save(settings with { Layout = settings.Layout with { Logo = settings.Layout.Logo with { Visible = false, Path = null } } });
-        RemoveLogoItem.IsEnabled = false;
+        LogoToggle.IsChecked = settings.Layout.Logo is { Visible: true, Path: not null };
+        RemoveLogoItem.Visibility = settings.Layout.Logo.Path is null ? Visibility.Collapsed : Visibility.Visible;
+        foreach (var (toggle, name) in new[] { (CameraToggle, "Camera"), (LogoToggle, "Logo"), (MicToggle, "Microphone"), (SoundToggle, "Computer sound") })
+            AutomationProperties.SetName(toggle, NameWithState(name, toggle.IsChecked == true));
+    }
+
+    public static string ConfirmationText(bool copied) => copied ? "Screenshot saved and copied" : "Screenshot saved";
+
+    // While recording only the Screenshot button shows a check, so the timer stays visible.
+    void ShowConfirmation(ScreenshotResult shot)
+    {
+        lastShot = shot.Path;
+        confirm.Stop();
+        if (state == RecorderState.Idle)
+        {
+            ConfirmText.Text = ConfirmationText(shot.Copied);
+            Bar.Visibility = Visibility.Collapsed;
+            Confirmation.Visibility = Visibility.Visible;
+            FitSize();
+        }
+        else LiveScreenshotIcon.Glyph = "\uE73E";
+        confirm.Interval = TimeSpan.FromSeconds(state == RecorderState.Idle ? 3 : 1);
+        confirm.Start();
+    }
+
+    void EndConfirmation()
+    {
+        confirm.Stop();
+        LiveScreenshotIcon.Glyph = "\uE722";
+        if (Confirmation.Visibility == Visibility.Collapsed) return;
+        Confirmation.Visibility = Visibility.Collapsed;
+        Bar.Visibility = Visibility.Visible;
+        FitSize();
+    }
+
+    void ShowInFolder_Click(object sender, RoutedEventArgs e)
+    {
+        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{lastShot}\"");
+        EndConfirmation();
+    }
+
+    void OpenFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try { Directory.CreateDirectory(settings.OutputFolder); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Warn($"The folder {settings.OutputFolder} could not be created.", "Screen Recorder");
+            return;
+        }
+        System.Diagnostics.Process.Start("explorer.exe", $"\"{settings.OutputFolder}\"");
+    }
+
+    void Quit_Click(object sender, RoutedEventArgs e) => Quit();
+
+    // The same path as closing the bar, so a running recording is stopped and saved first.
+    async void Quit()
+    {
+        if (busy) return;
+        if (session is not null) await StopRecording();
+        Close();
     }
 
     void Screenshot_Click(object sender, RoutedEventArgs e) => TakeScreenshot();
 
     async void TakeScreenshot()
     {
-        try { await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder); }
+        try { ShowConfirmation(await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder)); }
         catch (CaptureUnavailableException ex) { NativeMethods.ShowWarning(hwnd, ex.Message, "Screenshot"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             NativeMethods.ShowWarning(hwnd, $"The screenshot could not be saved to {settings.OutputFolder}.", "Screenshot");
         }
-    }
-
-    readonly DispatcherQueueTimer clock;
-    RecorderState state = RecorderState.Idle;
-    RecordingSession? session;
-    bool busy, showFps;
-    int countdownRun;
-
-    void Record_Click(object sender, RoutedEventArgs e) => ToggleRecord();
-    void Stop_Click(object sender, RoutedEventArgs e) => ToggleRecord();
-    void Pause_Click(object sender, RoutedEventArgs e) => TogglePause();
-
-    async void ToggleRecord()
-    {
-        if (busy) return;
-        if (state == RecorderState.Idle) await StartRecording();
-        else if (state == RecorderState.Countdown) SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
-        else await StopRecording();
-    }
-
-    void TogglePause()
-    {
-        if (busy || session is null) return;
-        SetState(RecorderStateMachine.Next(state, RecorderCommand.TogglePause, settings.Countdown));
-        if (state == RecorderState.Paused) session.Pause();
-        else session.Resume();
-        ShowElapsed();
-    }
-
-    // Errors from starting or stopping a recording that the user should see instead of a crash.
-    public static bool IsRecordingError(Exception e) =>
-        e is CaptureUnavailableException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or COMException;
-
-    // Notes from the recording that the user should see when it stops.
-    public static bool IsShownNote(string n) =>
-        n.StartsWith("webcam lost") || n.StartsWith("mic lost") || n.StartsWith("system sound lost") || n.Contains("disk") || n.StartsWith("The logo");
-
-    // A black first frame means a protected window only. Monitors and regions can be black for real.
-    public static bool BlockedByBlack(CaptureTarget target, bool looksBlack) => looksBlack && target is WindowTarget;
-
-    internal void Warn(string text, string caption)
-    {
-        // WM_HOTKEY still arrives inside the message box loop, so the busy flag keeps a hotkey from starting a recording there.
-        var wasBusy = busy;
-        busy = true;
-        NativeMethods.ShowWarning(hwnd, text, caption);
-        busy = wasBusy;
-    }
-
-    void Fail(Exception e)
-    {
-        NativeMethods.ShowWarning(hwnd, e.Message, "Record");
-        state = RecorderStateMachine.Next(state, RecorderCommand.Failed, settings.Countdown);
-    }
-
-    async Task StartRecording()
-    {
-        RecordingOptions options;
-        PreflightResult p;
-        settingsWindow?.Close(); // its changes would not reach a running recording
-        busy = true;
-        SetState(state);
-        try
-        {
-            var firstCam = settings.Layout.Camera.Visible && settings.WebcamId is null ? (await WebcamSource.ListAsync()).FirstOrDefault().Id : null;
-            options = RecordingOptionsBuilder.Build(settings, CurrentTarget, firstCam);
-            p = await RecordingSession.PreflightAsync(options);
-            if (BlockedByBlack(CurrentTarget, p.LooksBlack))
-            {
-                NativeMethods.ShowWarning(hwnd, "This window cannot be captured. It may be protected or running as administrator.", "Record");
-                return;
-            }
-            if (p.Encoders == EncoderSupport.TooFewHardwareSessions)
-            {
-                if (!NativeMethods.AskYesCancel(hwnd, "This PC cannot encode 3 videos at once. Save the raw files only, without the finished video?", "Record")) return;
-                options = options with { WriteFinal = false };
-            }
-            if (p.Encoders == EncoderSupport.SoftwareOnly)
-                NativeMethods.ShowWarning(hwnd, "No hardware video encoder was found. Recording will run at 30 frames per second.", "Record");
-            if (p.ScaledDown)
-                NativeMethods.ShowWarning(hwnd, $"The captured area is larger than the encoder accepts. The video will be scaled down to {p.FrameSize.Width} x {p.FrameSize.Height}.", "Record");
-            showFps = p.FrameRate < options.FrameRate && p.Encoders != EncoderSupport.SoftwareOnly;
-            FpsText.Text = $"{p.FrameRate} fps";
-        }
-        catch (Exception e) when (IsRecordingError(e)) { Fail(e); return; }
-        finally { busy = false; SetState(state); }
-
-        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
-        var run = ++countdownRun;
-        for (var n = 3; n > 0 && state == RecorderState.Countdown; n--)
-        {
-            CountdownText.Text = n.ToString();
-            await Task.Delay(1000);
-            if (run != countdownRun) return; // cancelled and started again during this second
-        }
-        if (state == RecorderState.Countdown) SetState(RecorderStateMachine.Next(state, RecorderCommand.CountdownDone, settings.Countdown));
-        if (state != RecorderState.Recording) return;
-
-        busy = true;
-        SetState(state);
-        try
-        {
-            var s = await RecordingSession.StartAsync(options, p);
-            s.StoppedByItself += r => DispatcherQueue.TryEnqueue(() => StoppedByItself(s, r));
-            // A window closed in the first instant fired the event before anyone listened. The queued call runs after busy is cleared.
-            if (s.HasStopped) DispatcherQueue.TryEnqueue(async () => StoppedByItself(s, await s.StopAsync()));
-            session = s;
-            s.SetLayout(settings.Layout); // camera changes made during the countdown and the start
-            ShowElapsed();
-            clock.Start();
-        }
-        catch (Exception e) when (IsRecordingError(e)) { Fail(e); }
-        finally { busy = false; SetState(state); }
-    }
-
-    async Task StopRecording()
-    {
-        var s = session!;
-        busy = true;
-        clock.Stop();
-        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
-        RecordingResult result;
-        try
-        {
-            result = await s.StopAsync();
-            await s.DisposeAsync();
-        }
-        catch (Exception e) when (IsRecordingError(e))
-        {
-            Warn(e.Message, "Recording");
-            return;
-        }
-        finally { session = null; busy = false; SetState(state); }
-        var lines = result.Notes.Where(IsShownNote).ToList();
-        if (result.DroppedFrames > 0) lines.Insert(0, $"Dropped frames in the finished video: {result.DroppedFrames}");
-        if (lines.Count > 0) Warn(string.Join("\n", lines), "Recording");
-        System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\"");
-    }
-
-
-    void StoppedByItself(RecordingSession s, RecordingResult r)
-    {
-        if (session != s || busy) return; // a stop by the user is already saving it
-        session = null;
-        clock.Stop();
-        SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
-        _ = s.DisposeAsync();
-        if (r.Notes.Count > 0) Warn(r.Notes[^1], "Recording");
-    }
-
-    void ShowElapsed()
-    {
-        if (session is null) return;
-        var t = session.Elapsed;
-        TimerText.Text = t.ToString(t.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss");
     }
 
     // The one place that maps the recorder state to what the bar shows.
@@ -407,8 +352,11 @@ public sealed partial class BarWindow : Window
         bool idle = s == RecorderState.Idle, countdown = s == RecorderState.Countdown, live = !idle && !countdown;
         Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
         RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
-        RecordButton.Visibility = MicToggle.Visibility = SoundToggle.Visibility = ScreenshotButton.Visibility = Shown(!live);
-        RecordIcon.Visibility = Shown(!countdown);
+        if (!idle && Confirmation.Visibility == Visibility.Visible) EndConfirmation();
+        foreach (var c in new UIElement[] { ScreenshotButton, SourceSeparator, SourceSwitch, MicToggle, SoundToggle, MoreSeparator, MoreButton }) c.Visibility = Shown(idle);
+        LiveScreenshotButton.Visibility = Shown(!idle);
+        RecordButton.Visibility = Shown(!live);
+        RecordIcon.Glyph = countdown ? "" : "";
         CountdownText.Visibility = Shown(countdown);
         var recordName = countdown ? "Cancel countdown" : "Record";
         ToolTipService.SetToolTip(RecordButton, recordName);
@@ -419,7 +367,7 @@ public sealed partial class BarWindow : Window
         PauseIcon.Glyph = s == RecorderState.Paused ? "" : "";
         ToolTipService.SetToolTip(PauseButton, pauseName);
         AutomationProperties.SetName(PauseButton, pauseName);
-        TargetButton.IsEnabled = LogoButton.IsEnabled = SettingsButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
+        DesktopSegment.IsEnabled = WindowSegment.IsEnabled = RegionSegment.IsEnabled = MoreButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
         if (Root.XamlRoot is not null) FitSize();
     }
 
