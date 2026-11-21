@@ -68,7 +68,7 @@ public sealed partial class BarWindow : Window
         // the overlays come back on release, placed for the new region
         frame.DragStarted += () => { cameraOverlay.Hide(); logoOverlay.Hide(); };
         frame.DragCancelled += UpdateOverlays;
-        frame.Changed += r => SetTarget(r, "Region");
+        frame.Changed += r => { SetTarget(r, "Region"); Remember(r); };
         follow = DispatcherQueue.CreateTimer();
         follow.Interval = TimeSpan.FromMilliseconds(100);
         follow.Tick += (_, _) => FollowWindow();
@@ -187,12 +187,14 @@ public sealed partial class BarWindow : Window
 
     async void Region_Click(object sender, RoutedEventArgs e)
     {
+        var monitors = NativeMethods.Monitors().Select(m => (m.Hmonitor, m.Device, m.Bounds.Right - m.Bounds.Left, m.Bounds.Bottom - m.Bounds.Top));
+        if (TargetPicker.RegionClick(CurrentTarget, settings.Region, monitors) is { } saved) { SetTarget(saved, "Region"); return; }
         AppWindow.Hide();
         // the overlays sit on top, so they would take the drag meant for the region picker
         cameraOverlay.Hide();
         logoOverlay.Hide();
         frame.Hide();
-        try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
+        try { if (await RegionSelectWindow.PickAsync() is { } picked) { SetTarget(picked, "Region"); Remember(picked); } }
         finally { AppWindow.Show(); UpdateOverlays(); }
     }
 
@@ -209,7 +211,7 @@ public sealed partial class BarWindow : Window
         {
             var on = i == selected;
             SegmentLook.Apply(segments[i], on, SegmentProbe);
-            ToolTipService.SetToolTip(segments[i], on ? label : names[i]);
+            ToolTipService.SetToolTip(segments[i], on && i == 2 ? "Region. Click again to select a new area." : on ? label : names[i]);
             AutomationProperties.SetName(segments[i], on ? names[i] + ", selected" : names[i]);
         }
     }
@@ -219,6 +221,12 @@ public sealed partial class BarWindow : Window
         var item = new MenuFlyoutItem { Text = text };
         item.Click += (_, _) => SetTarget(target, label);
         return item;
+    }
+
+    // The region is saved for the next run, by monitor device name because handles change.
+    void Remember(RegionTarget r)
+    {
+        if (NativeMethods.MonitorDevice(r.Hmonitor) is { } device) Save(settings with { Region = new SavedRegion(device, r.X, r.Y, r.Width, r.Height) });
     }
 
     void SetTarget(CaptureTarget target, string label)
@@ -408,7 +416,7 @@ public sealed partial class BarWindow : Window
 
     (bool, bool) ApplySettings(Settings s)
     {
-        Save(s);
+        Save(s with { Region = settings.Region }); // the settings window holds an older copy of the region
         cameraOverlay.WebcamId = s.WebcamId;
         return RegisterHotkeys();
     }

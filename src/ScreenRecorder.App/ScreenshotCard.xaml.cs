@@ -226,7 +226,7 @@ public sealed partial class ScreenshotCard : Window
 
     void Delete_Click(object sender, RoutedEventArgs e)
     {
-        if (File.Exists(path) && !NativeMethods.Recycle(path))
+        if (File.Exists(path) && !RecycleBin.Recycle(path))
         {
             NativeMethods.ShowWarning(hwnd, "The screenshot could not be deleted.", "Screenshot");
             return;

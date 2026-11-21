@@ -2,8 +2,12 @@ using System.Text.Json;
 
 namespace ScreenRecorder.Core;
 
+// The last region picked: the monitor's device name and the rectangle in that monitor's pixels.
+public record SavedRegion(string Monitor, int X, int Y, int Width, int Height);
+
 public record Settings(string OutputFolder, Hotkey RecordHotkey, Hotkey ScreenshotHotkey, bool Countdown, int FrameRate,
-    string? WebcamId, string? MicId, bool Mic, bool SystemAudio, Layout Layout)
+    string? WebcamId, string? MicId, bool Mic, bool SystemAudio, Layout Layout,
+    SavedRegion? Region = null)
 {
     public static Settings Default { get; } = new(
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "ScreenRecorder"),

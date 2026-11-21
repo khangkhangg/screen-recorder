@@ -15,7 +15,7 @@ public class RecycleTests
     static bool RecycleOnSta(string path)
     {
         var done = false;
-        var t = new Thread(() => done = NativeMethods.Recycle(path));
+        var t = new Thread(() => done = RecycleBin.Recycle(path));
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
         t.Join();

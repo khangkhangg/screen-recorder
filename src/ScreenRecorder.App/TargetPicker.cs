@@ -18,6 +18,17 @@ public static class TargetPicker
     public static bool IsPickable(string title, bool visible, bool minimized, bool cloaked, bool toolWindow, bool ownProcess) =>
         visible && !minimized && !cloaked && !toolWindow && !ownProcess && !string.IsNullOrWhiteSpace(title);
 
+    // A saved region counts while its monitor is there and the rectangle still fits inside it.
+    public static RegionTarget? Restore(SavedRegion? s, IEnumerable<(nint Hmonitor, string Device, int Width, int Height)> monitors) =>
+        s is null || s.X < 0 || s.Y < 0 || s.Width < 16 || s.Height < 16 ? null
+        : monitors.Where(m => m.Device == s.Monitor && s.X + s.Width <= m.Width && s.Y + s.Height <= m.Height)
+            .Select(m => new RegionTarget(m.Hmonitor, s.X, s.Y, s.Width, s.Height)).FirstOrDefault();
+
+    // What clicking the Region segment selects: the saved region, or null to open the picker.
+    // A click while Region is already selected always opens the picker, so a new area can be chosen.
+    public static RegionTarget? RegionClick(CaptureTarget current, SavedRegion? saved, IEnumerable<(nint Hmonitor, string Device, int Width, int Height)> monitors) =>
+        current is RegionTarget ? null : Restore(saved, monitors);
+
     // Capture area in physical screen pixels, or null when its monitor or window is gone.
     public static RectF? AreaOnScreen(CaptureTarget target, Func<nint, RectF?> monitorRect, Func<nint, RectF?> windowRect) => target switch
     {
