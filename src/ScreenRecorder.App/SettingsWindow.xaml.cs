@@ -31,6 +31,7 @@ public sealed partial class SettingsWindow : Window
         settings = current;
         this.apply = apply;
         this.releaseHotkeys = releaseHotkeys;
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
         // LostFocus does not fire when another app takes over, so the hotkeys come back on deactivation and go again on return.
         Activated += (_, e) =>
         {

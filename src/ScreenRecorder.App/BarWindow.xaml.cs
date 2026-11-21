@@ -32,6 +32,7 @@ public sealed partial class BarWindow : Window
     public BarWindow()
     {
         InitializeComponent();
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         if (!NativeMethods.ExcludeFromCapture(hwnd)) System.Diagnostics.Debug.WriteLine("Bar could not be excluded from capture");
 
