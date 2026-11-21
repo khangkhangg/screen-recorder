@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use args::{Command, ListKind, RecordArgs, ShotArgs, Target};
 use recorder_win::{
     find_window, init_process, monitors, on_console_stop, screenshot, videos_folder, windows, AudioSource,
-    CaptureTarget, EncoderSupport, Error, RecordingOptions, RecordingSession, WebcamSource,
+    CaptureTarget, EncoderSupport, Error, PreflightResult, RecordingOptions, RecordingResult, RecordingSession,
+    WebcamSource,
 };
 use serde_json::{json, Value};
 
@@ -26,7 +27,8 @@ const USAGE: &str = r#"screenrec records the screen and takes screenshots.
 
 Monitors are numbered from 1, in the order `list monitors` prints. --window matches part of a
 window title, ignoring case. --region is in pixels of --monitor N (default 1). --camera-pos is
-in fractions from 0 to 1 of the video. --seconds is at most 86400. Files go to the Videos
+in fractions from 0 to 1 of the video. --seconds is at most 86400. A value cannot start with
+--, so a window title such as "--foo" cannot be given. Files go to the Videos
 folder's ScreenRecorder folder unless --out is given.
 
 `record` runs until --seconds pass, Ctrl+C, or the line `stop` on standard input. The lines
@@ -150,12 +152,47 @@ fn capture_target(target: &Target) -> Result<CaptureTarget, Failure> {
 }
 
 fn output_root(out: Option<String>) -> PathBuf {
-    out.map(PathBuf::from).unwrap_or_else(|| {
-        let videos = videos_folder().or_else(|| {
-            std::env::var("USERPROFILE").ok().map(|profile| PathBuf::from(profile).join("Videos"))
-        });
-        videos.unwrap_or_default().join("ScreenRecorder")
+    out.map(PathBuf::from).unwrap_or_else(|| root_from(videos_folder()))
+}
+
+/// The default output root from the known Videos folder, or `%USERPROFILE%\Videos` without one.
+fn root_from(known_videos: Option<PathBuf>) -> PathBuf {
+    let videos = known_videos
+        .or_else(|| std::env::var("USERPROFILE").ok().map(|profile| PathBuf::from(profile).join("Videos")));
+    videos.unwrap_or_default().join("ScreenRecorder")
+}
+
+/// The notes the preflight result calls for, which the tool also prints on standard error.
+fn preflight_notes(p: &PreflightResult, requested_fps: i32, write_final: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if p.encoders == EncoderSupport::TooFewHardwareSessions && write_final {
+        notes.push("Too few hardware encoder sessions are free, so final.mp4 is not written.".to_string());
+    }
+    let size = p.frame_size;
+    if p.scaled_down {
+        notes.push(format!("The video is scaled down to {}x{}, the largest size the encoder takes.", size.width, size.height));
+    }
+    let big = i64::from(size.width) * i64::from(size.height) > 2560 * 1440;
+    if p.encoders != EncoderSupport::SoftwareOnly && p.frame_rate < requested_fps && big {
+        notes.push("The screen is larger than 2560x1440, so it records at 30 frames per second.".to_string());
+    }
+    notes
+}
+
+/// The JSON text for a finished recording, or a failure when it saved no files. Notes in
+/// `said` were printed on standard error at the start, so the failure leaves them out.
+fn outcome(r: &RecordingResult, seconds: f64, said: &[String]) -> Result<String, Failure> {
+    if r.files.is_empty() {
+        let unsaid: Vec<&str> = r.notes.iter().filter(|n| !said.contains(n)).map(String::as_str).collect();
+        return Err((1, format!("The recording saved no files. {}", unsaid.join(" ")).trim_end().to_string()));
+    }
+    Ok(json!({
+        "folder": r.folder, "files": r.files, "droppedFrames": r.dropped_frames, "notes": r.notes,
+        "frameRate": r.frame_rate, "frameWidth": r.frame_size.width, "frameHeight": r.frame_size.height,
+        "screenWidth": r.screen_file_size.width, "screenHeight": r.screen_file_size.height,
+        "seconds": seconds,
     })
+    .to_string())
 }
 
 fn take_screenshot(a: ShotArgs) -> Result<(), Failure> {
@@ -187,26 +224,18 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
         let message = "This window cannot be captured. It may be protected or running as administrator.";
         return Err((1, message.into()));
     }
-    let mut notes = Vec::new();
-    if p.encoders == EncoderSupport::TooFewHardwareSessions && o.write_final {
+    let notes = preflight_notes(&p, o.frame_rate, o.write_final);
+    if p.encoders == EncoderSupport::TooFewHardwareSessions {
         o.write_final = false;
-        notes.push("Too few hardware encoder sessions are free, so final.mp4 is not written.".to_string());
     }
-    if p.scaled_down {
-        let s = p.frame_size;
-        notes.push(format!("The video is scaled down to {}x{}, the largest size the encoder takes.", s.width, s.height));
-    }
-    let size = p.frame_size;
     if p.encoders == EncoderSupport::SoftwareOnly {
         // The engine adds its own note for this, so it only goes to standard error.
         say("No hardware encoder, so it records at 30 frames per second with the software encoder.");
-    } else if p.frame_rate < o.frame_rate && i64::from(size.width) * i64::from(size.height) > 2560 * 1440 {
-        notes.push("The screen is larger than 2560x1440, so it records at 30 frames per second.".to_string());
     }
     for n in &notes {
         say(n);
     }
-    o.extra_notes = notes;
+    o.extra_notes = notes.clone();
 
     // Without the handler Ctrl+C still ends the process, so a failure here does not stop the recording.
     let _ = on_console_stop(stop_on_console);
@@ -239,19 +268,7 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
     }
 
     let seconds = session.elapsed().as_secs_f64();
-    let r = session.stop();
-    if r.files.is_empty() {
-        return Err((1, format!("The recording saved no files. {}", r.notes.join(" "))));
-    }
-    print(
-        &json!({
-            "folder": r.folder, "files": r.files, "droppedFrames": r.dropped_frames, "notes": r.notes,
-            "frameRate": r.frame_rate, "frameWidth": r.frame_size.width, "frameHeight": r.frame_size.height,
-            "screenWidth": r.screen_file_size.width, "screenHeight": r.screen_file_size.height,
-            "seconds": seconds,
-        })
-        .to_string(),
-    );
+    print(&outcome(&session.stop(), seconds, &notes)?);
     Ok(())
 }
 
@@ -278,5 +295,77 @@ fn stop_on_console() {
     let end = Instant::now() + Duration::from_secs(10);
     while !DONE.load(SeqCst) && Instant::now() < end {
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recorder_core::frame_math::PixelSize;
+
+    fn preflight(width: i32, height: i32, frame_rate: i32) -> PreflightResult {
+        let size = PixelSize { width, height };
+        PreflightResult {
+            encoders: EncoderSupport::Hardware,
+            frame_size: size,
+            scaled_down: false,
+            looks_black: false,
+            frame_rate,
+            screen_file_size: size,
+        }
+    }
+
+    fn result(files: &[&str], notes: &[&str]) -> RecordingResult {
+        let size = PixelSize { width: 1280, height: 720 };
+        RecordingResult {
+            folder: PathBuf::from(r"C:\rec"),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            dropped_frames: 0,
+            notes: notes.iter().map(|n| n.to_string()).collect(),
+            frame_rate: 60,
+            frame_size: size,
+            screen_file_size: size,
+        }
+    }
+
+    fn size_note(notes: &[String]) -> bool {
+        notes.iter().any(|n| n.contains("2560x1440"))
+    }
+
+    #[test]
+    fn size_note_only_for_frames_above_2560x1440() {
+        assert!(size_note(&preflight_notes(&preflight(3840, 2160, 30), 60, true)));
+        assert!(!size_note(&preflight_notes(&preflight(1920, 1080, 30), 60, true)));
+        assert!(!size_note(&preflight_notes(&preflight(3840, 2160, 60), 60, true)));
+    }
+
+    #[test]
+    fn a_recording_with_no_files_is_a_failure_with_no_json() {
+        let (code, message) = outcome(&result(&[], &["said at start", "disk full"]), 1.0, &["said at start".into()])
+            .expect_err("no files must fail");
+        assert_eq!(1, code);
+        assert_eq!(1, message.matches("disk full").count(), "{message}");
+        assert!(!message.contains("said at start"), "{message}");
+        assert!(!message.contains('{'), "{message}");
+    }
+
+    #[test]
+    fn a_recording_with_files_is_json() {
+        let text = outcome(&result(&["screen.mp4"], &[]), 2.0, &[]).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(1280, v["screenWidth"]);
+        assert_eq!(2.0, v["seconds"]);
+    }
+
+    #[test]
+    fn default_root_is_in_the_known_videos_folder() {
+        assert_eq!(PathBuf::from(r"D:\Vids\ScreenRecorder"), root_from(Some(PathBuf::from(r"D:\Vids"))));
+        assert_eq!(videos_folder().unwrap().join("ScreenRecorder"), output_root(None));
+    }
+
+    #[test]
+    fn without_a_known_folder_the_root_is_under_the_profile() {
+        let profile = PathBuf::from(std::env::var("USERPROFILE").unwrap());
+        assert_eq!(profile.join("Videos").join("ScreenRecorder"), root_from(None));
     }
 }

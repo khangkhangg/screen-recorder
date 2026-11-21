@@ -309,7 +309,8 @@ impl RecordingSession {
         let result = lock(&self.shared.result).clone();
         result.unwrap_or_else(|| {
             let s = self.shared.state();
-            let notes = vec!["The recording stopped unexpectedly.".into()];
+            let mut notes = s.file.notes.clone();
+            notes.push("The recording stopped unexpectedly.".into());
             recording_result(&self.shared.folder, &s.file, Vec::new(), notes)
         })
     }
