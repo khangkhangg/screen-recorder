@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Graphics.Canvas;
 using ScreenRecorder.Capture;
@@ -241,6 +242,49 @@ public class RecordingSessionTests
         var folder = (await s.StopAsync()).Folder;
         Assert.EndsWith(" (2)", folder);
         Assert.True(File.Exists(Path.Combine(folder, "session.json")));
+    }
+
+    [Fact]
+    public async Task Big_frame_scales_the_raw_screen_file()
+    {
+        var f = new TestFactory { Screen = () => new FakeScreen { SourceSize = new PixelSize(3840, 2160) } };
+        var p = await RecordingSession.PreflightAsync(Options(), f);
+        Assert.Equal(new PixelSize(3840, 2160), p.FrameSize);
+        Assert.Equal(new PixelSize(1920, 1080), p.ScreenFileSize);
+    }
+
+    [Fact]
+    public async Task Normal_frame_keeps_the_raw_screen_size()
+    {
+        var p = await RecordingSession.PreflightAsync(Options(), new TestFactory { Screen = () => new FakeScreen() });
+        Assert.Equal(new PixelSize(1920, 1080), p.FrameSize);
+        Assert.Equal(new PixelSize(1920, 1080), p.ScreenFileSize);
+    }
+
+    [LargeMonitorFact]
+    public async Task Desktop_4k_keeps_its_frames()
+    {
+        await using var s = await Start(Options() with { Mic = true });
+        await Task.Delay(10_000);
+        var watch = Stopwatch.StartNew();
+        var result = await s.StopAsync();
+        var stopTime = watch.Elapsed;
+        var final = MediaInfo.Read(Path.Combine(result.Folder, "final.mp4"));
+        var screen = MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4"));
+        Assert.True(result.DroppedFrames * 100 < final.FrameCount, $"{result.DroppedFrames} of {final.FrameCount} frames dropped");
+        Assert.Equal(3840, final.Width);
+        Assert.Equal(1920, screen.Width);
+        Assert.Equal(screen.FrameCount, final.FrameCount);
+        Assert.True(stopTime < TimeSpan.FromSeconds(3), $"StopAsync took {stopTime}");
+    }
+
+    sealed class LargeMonitorFactAttribute : FactAttribute
+    {
+        public LargeMonitorFactAttribute()
+        {
+            using var screen = ScreenSource.Create(new MonitorTarget(CaptureTarget.PrimaryMonitor()), CanvasDevice.GetSharedDevice());
+            if ((long)screen.SourceSize.Width * screen.SourceSize.Height <= 2560 * 1440) Skip = "The primary monitor is not larger than 2560x1440.";
+        }
     }
 
     sealed class TestFactory : ISourceFactory

@@ -157,21 +157,31 @@ public sealed class VideoFileWriter : IVideoWriter
         _queue.Add((stream, sample));
     }
 
+    // The sink writer blocks audio that is ahead of the video, while that video waits behind it in this
+    // queue. So audio waits here until video up to its time has been written.
     void Run()
     {
+        var audio = new Queue<IMFSample>();
+        long videoEnd = 0;
         foreach (var (stream, sample) in _queue.GetConsumingEnumerable())
         {
-            try
+            if (stream == _videoStream)
             {
-                if (_error is null) _writer.WriteSample(stream, sample);
+                videoEnd = sample.SampleTime + sample.SampleDuration;
+                Write(stream, sample);
+                Interlocked.Decrement(ref _behind);
             }
-            catch (SharpGenException e) { _error = Translate(e); }
-            finally
-            {
-                sample.Dispose();
-                if (stream == _videoStream) Interlocked.Decrement(ref _behind);
-            }
+            else audio.Enqueue(sample);
+            while (audio.TryPeek(out var a) && a.SampleTime < videoEnd) Write(_audioStream, audio.Dequeue());
         }
+        while (audio.TryDequeue(out var a)) Write(_audioStream, a);
+    }
+
+    void Write(int stream, IMFSample sample)
+    {
+        try { if (_error is null) _writer.WriteSample(stream, sample); }
+        catch (SharpGenException e) { _error = Translate(e); }
+        finally { sample.Dispose(); }
     }
 
     void ThrowIfFailed()

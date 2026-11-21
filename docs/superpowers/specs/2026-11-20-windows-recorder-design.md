@@ -116,6 +116,7 @@ If encoding falls behind during a recording, the app drops frames from `final.mp
 - If the captured area is larger than the encoder accepts, the app scales it down to fit, keeping its proportions, and says so before recording.
 - HDR screens are converted to standard colors, so the video does not look washed out.
 - The reference machine is a laptop with Intel Iris Xe class built-in graphics. The target there is 1920x1080 at 60 frames per second with under 1% dropped frames, and 4K at 30.
+- On screens larger than 2560x1440 the recording runs at 30 frames per second, and `screen.mp4` is scaled to fit 1920x1080 while `final.mp4` keeps the full size. The user decided this on 2026-11-21, because integrated graphics cannot encode 2 files of 3840x2160 at once.
 
 ### Screenshot
 

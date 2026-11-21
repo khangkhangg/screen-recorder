@@ -15,30 +15,31 @@ public sealed class Compositor : IDisposable
     const int MaxLogoSide = 8192;
 
     readonly CanvasDevice _device;
-    readonly PixelSize _frameSize;
+    readonly PixelSize _frameSize, _screenSize;
     readonly CanvasRenderTarget _screen, _final;
     readonly Lock _lock = new();
     CanvasBitmap? _logo;
 
-    public Compositor(CanvasDevice device, PixelSize frameSize)
+    public Compositor(CanvasDevice device, PixelSize frameSize, PixelSize? screenSize = null)
     {
         _device = device;
         _frameSize = frameSize;
-        _screen = new CanvasRenderTarget(device, frameSize.Width, frameSize.Height, 96);
+        _screenSize = screenSize ?? frameSize;
+        _screen = new CanvasRenderTarget(device, _screenSize.Width, _screenSize.Height, 96);
         _final = new CanvasRenderTarget(device, frameSize.Width, frameSize.Height, 96);
     }
 
     public IDirect3DSurface DrawScreen(CanvasBitmap screen)
     {
         using var ds = _screen.CreateDrawingSession();
-        DrawLetterboxed(ds, screen);
+        DrawLetterboxed(ds, screen, _screenSize);
         return _screen;
     }
 
     public IDirect3DSurface DrawFinal(CanvasBitmap screen, CanvasBitmap? camera, Layout layout)
     {
         using var ds = _final.CreateDrawingSession();
-        DrawLetterboxed(ds, screen);
+        DrawLetterboxed(ds, screen, _frameSize);
         lock (_lock)
         {
             if (layout.Logo.Visible && _logo is not null)
@@ -83,10 +84,10 @@ public sealed class Compositor : IDisposable
         return error;
     }
 
-    void DrawLetterboxed(CanvasDrawingSession ds, CanvasBitmap screen)
+    static void DrawLetterboxed(CanvasDrawingSession ds, CanvasBitmap screen, PixelSize size)
     {
         ds.Clear(Color.FromArgb(255, 0, 0, 0));
-        var r = FrameMath.Letterbox(new PixelSize((int)screen.SizeInPixels.Width, (int)screen.SizeInPixels.Height), _frameSize);
+        var r = FrameMath.Letterbox(new PixelSize((int)screen.SizeInPixels.Width, (int)screen.SizeInPixels.Height), size);
         ds.DrawImage(screen, new Rect(r.X, r.Y, r.Width, r.Height), screen.Bounds);
     }
 

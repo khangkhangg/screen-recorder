@@ -11,7 +11,7 @@ public record RecordingOptions(CaptureTarget Target, string OutputRoot, int Fram
 
 public record RecordingResult(string Folder, long DroppedFrames, IReadOnlyList<string> Notes);
 
-public record PreflightResult(EncoderSupport Encoders, PixelSize FrameSize, bool ScaledDown, bool LooksBlack, int FrameRate);
+public record PreflightResult(EncoderSupport Encoders, PixelSize FrameSize, bool ScaledDown, bool LooksBlack, int FrameRate, PixelSize ScreenFileSize);
 
 // One recording thread draws and writes every file from one RecordingClock, so all files share frame and sample indexes.
 public sealed class RecordingSession : IAsyncDisposable
@@ -29,7 +29,7 @@ public sealed class RecordingSession : IAsyncDisposable
     }
 
     readonly RecordingOptions _o;
-    readonly PixelSize _size;
+    readonly PixelSize _size, _screenSize;
     readonly int _frameRate;
     readonly DateTimeOffset _startedAt = DateTimeOffset.Now;
     readonly string _folder;
@@ -62,6 +62,7 @@ public sealed class RecordingSession : IAsyncDisposable
     {
         _o = o;
         _size = p.FrameSize;
+        _screenSize = p.ScreenFileSize;
         _frameRate = p.FrameRate;
         _layout = o.Layout;
         var name = Path.Combine(o.OutputRoot, _startedAt.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture));
@@ -82,9 +83,11 @@ public sealed class RecordingSession : IAsyncDisposable
         for (int i = 0; i < 100 && !screen.TryGetLatestFrame(out frame); i++) await Task.Delay(20);
         var size = FrameMath.FitWithin(screen.SourceSize, max);
         // The encoders keep up with 4K at 30 frames per second and 1080p at 60.
+        bool big = (long)size.Width * size.Height > LargeFrame;
         int rate = encoders == EncoderSupport.SoftwareOnly ? SoftwareRate
-            : (long)size.Width * size.Height > LargeFrame ? Math.Min(o.FrameRate, 30) : o.FrameRate;
-        return new(encoders, size, size != FrameMath.ToEven(screen.SourceSize), frame is null || ScreenSource.LooksBlack(frame), rate);
+            : big ? Math.Min(o.FrameRate, 30) : o.FrameRate;
+        return new(encoders, size, size != FrameMath.ToEven(screen.SourceSize), frame is null || ScreenSource.LooksBlack(frame), rate,
+            big ? FrameMath.FitWithin(size, new PixelSize(1920, 1080)) : size);
     }
 
     public static Task<RecordingSession> StartAsync(RecordingOptions o, PreflightResult p) => StartAsync(o, p, SourceFactory.Instance);
@@ -167,7 +170,7 @@ public sealed class RecordingSession : IAsyncDisposable
         if (_o.Mic) await AddTrack("mic", "mic.wav", f.OpenMicAsync(_o.MicId));
         if (_o.SystemAudio) await AddTrack("system sound", "system.wav", f.OpenSystemAudioAsync());
 
-        _compositor = new Compositor(device, _size);
+        _compositor = new Compositor(device, _size, _screenSize);
         if (_compositor.SetLogo(_o.Layout.Logo.Path) is { } error) _notes.Add(error);
         _black = new CanvasRenderTarget(device, _size.Width, _size.Height, 96);
         using (var ds = _black.CreateDrawingSession()) ds.Clear(Windows.UI.Color.FromArgb(255, 0, 0, 0));
@@ -182,6 +185,7 @@ public sealed class RecordingSession : IAsyncDisposable
             OpenWriters(f, device, false);
         }
         if (!hardware) _notes.Add("no hardware encoder, recording at 30 frames per second");
+        if (_screenSize != _size) _notes.Add($"screen.mp4 scaled to {_screenSize.Width}x{_screenSize.Height}");
         foreach (var t in _tracks) t.Wav = new WavWriter(Path.Combine(_folder, t.File));
 
         if (_finalW != null) _sources.Add(new("final.mp4", "final", 0));
@@ -211,7 +215,7 @@ public sealed class RecordingSession : IAsyncDisposable
     void OpenWriters(ISourceFactory f, CanvasDevice device, bool hardware)
     {
         _rate = hardware ? _frameRate : SoftwareRate;
-        _screenW = f.OpenWriter(Path.Combine(_folder, "screen.mp4"), _size, _rate, device, hardware, false);
+        _screenW = f.OpenWriter(Path.Combine(_folder, "screen.mp4"), _screenSize, _rate, device, hardware, false);
         if (_o.WriteFinal) _finalW = f.OpenWriter(Path.Combine(_folder, "final.mp4"), _size, _rate, device, hardware, _tracks.Count > 0);
         if (_cam != null)
         {
