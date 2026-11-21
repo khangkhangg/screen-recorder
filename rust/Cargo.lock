@@ -33,6 +33,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "recorder-cli"
+version = "0.1.0"
+dependencies = [
+ "recorder-core",
+ "recorder-win",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "recorder-core"
 version = "0.1.0"
 dependencies = [
