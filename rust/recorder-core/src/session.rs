@@ -202,9 +202,7 @@ mod tests {
 
     #[test]
     fn reads_a_session_file_written_by_the_csharp_app() {
-        let example = EXAMPLE.trim().replace("
-", "
-");
+        let example = EXAMPLE.trim().replace("\r\n", "\n");
         let f = deserialize_session(&example).unwrap();
         assert_eq!(f.version, 1);
         assert_eq!(serialize_session(&f), example);
