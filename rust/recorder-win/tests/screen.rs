@@ -82,6 +82,15 @@ fn pixel(frame: &Frame, device: &Device, x: u32, y: u32) -> [u8; 4] {
     }
 }
 
+/// The median of each channel over the 5 by 5 block around (x, y), so a mouse pointer over a few pixels does not change it.
+fn median_pixel(frame: &Frame, device: &Device, x: u32, y: u32) -> [u8; 4] {
+    let mut block: Vec<[u8; 4]> = (0..25).map(|i| pixel(frame, device, x + i % 5 - 2, y + i / 5 - 2)).collect();
+    std::array::from_fn(|c| {
+        block.sort_by_key(|p| p[c]);
+        block[12][c]
+    })
+}
+
 /// True when every color channel of a BGRA pixel is within 3 of `level`.
 fn near(px: [u8; 4], level: u8) -> bool {
     px[..3].iter().all(|c| c.abs_diff(level) <= 3)
@@ -217,14 +226,15 @@ fn region_is_cropped() {
     // Starts 50 pixels right of and 20 below the window's top-left corner.
     let target = CaptureTarget::Region { monitor: primary().handle, x: WINDOW_X + 50, y: WINDOW_Y + 20, width: 640, height: 360 };
     let mut src = ScreenSource::create(&target, &device).unwrap();
-    thread::sleep(Duration::from_millis(500));
     let frame = first_frame(&mut src);
     assert_eq!(PixelSize { width: 640, height: 360 }, src.source_size());
     assert_eq!(PixelSize { width: 640, height: 360 }, frame.size);
     assert_eq!((640, 360), texture_size(&frame.texture));
-    // Region pixel (10, 10) is window pixel (60, 30), in the gray half.
-    let px = pixel(&frame, &device, 10, 10);
-    assert!(near(px, 60), "{px:?}");
+    // Region pixel (10, 10) is window pixel (60, 30), in the gray half. Early frames can come before the window paints.
+    wait_until(
+        || src.latest_frame().is_some_and(|f| near(median_pixel(&f, &device, 10, 10), 60)),
+        Duration::from_secs(2),
+    );
     window.close();
 }
 

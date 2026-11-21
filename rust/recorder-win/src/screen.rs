@@ -629,14 +629,14 @@ mod tests {
 
     #[test]
     #[ignore = "needs the desktop"]
-    fn standard_content_is_unchanged_on_every_monitor() {
+    fn standard_content_is_unchanged_at_every_white_level() {
         let mut failed = Vec::new();
-        for (peak, white) in [(295.0, 240.0), (600.0, 200.0), (1000.0, 200.0), (1500.0, 300.0)] {
+        for white in [240.0, 200.0, 300.0, 80.0] {
             let (g, w) = convert(white);
-            println!("peak {peak} nits, white {white} nits: gray {g:?}, white {w:?} (BGRA)");
+            println!("white {white} nits: gray {g:?}, white {w:?} (BGRA)");
             let ok = g[..3].iter().all(|c| (126..=130).contains(c)) && w[..3].iter().all(|c| *c >= 250);
             if !ok {
-                failed.push((peak, white));
+                failed.push(white);
             }
         }
         assert!(failed.is_empty(), "failed for {failed:?}");
