@@ -17,7 +17,7 @@ public sealed partial class SettingsWindow : Window
     Settings settings;
     readonly Func<Settings, (bool Record, bool Screenshot)> apply;
     readonly List<string?> webcamIds = [null], micIds = [null];
-    bool loading = true;
+    bool loading = true, hotkeyBoxFocused;
 
     readonly Action releaseHotkeys;
 
@@ -27,6 +27,13 @@ public sealed partial class SettingsWindow : Window
         settings = current;
         this.apply = apply;
         this.releaseHotkeys = releaseHotkeys;
+        // LostFocus does not fire when another app takes over, so the hotkeys come back on deactivation and go again on return.
+        Activated += (_, e) =>
+        {
+            if (!hotkeyBoxFocused) return;
+            if (e.WindowActivationState == WindowActivationState.Deactivated) ShowHotkeyErrors(apply(settings));
+            else releaseHotkeys();
+        };
         Root.Loaded += (_, _) =>
         {
             var scale = Root.XamlRoot.RasterizationScale;
@@ -90,9 +97,9 @@ public sealed partial class SettingsWindow : Window
     void Warn(string text) => NativeMethods.ShowWarning(WinRT.Interop.WindowNative.GetWindowHandle(this), text, "Settings");
 
     // While a hotkey box has focus the bar's hotkeys are released, so pressing the current one reaches the box.
-    void Hotkey_GotFocus(object sender, RoutedEventArgs e) => releaseHotkeys();
+    void Hotkey_GotFocus(object sender, RoutedEventArgs e) { hotkeyBoxFocused = true; releaseHotkeys(); }
 
-    void Hotkey_LostFocus(object sender, RoutedEventArgs e) => ShowHotkeyErrors(apply(settings));
+    void Hotkey_LostFocus(object sender, RoutedEventArgs e) { hotkeyBoxFocused = false; ShowHotkeyErrors(apply(settings)); }
 
     public static string? HotkeyText(int vk, bool ctrl, bool shift, bool alt, bool win)
     {

@@ -55,6 +55,7 @@ public sealed class RecordingSession : IAsyncDisposable
     long _written, _finalNext, _camWritten, _samples, _dropped;
 
     public event Action<RecordingResult>? StoppedByItself;
+    public bool HasStopped => _done.Task.IsCompleted;
 
     public TimeSpan Elapsed => _clock.MediaTime;
 
@@ -164,8 +165,10 @@ public sealed class RecordingSession : IAsyncDisposable
         };
         if (_o.WebcamId is { } id)
         {
-            _cam = await f.OpenWebcamAsync(id, device);
-            _cam.Lost += () => _camLost = true;
+            // A camera that will not open (busy, unplugged, no permission) only costs the camera, not the recording.
+            try { _cam = await f.OpenWebcamAsync(id, device); }
+            catch (Exception) { _notes.Add("webcam lost at 0.0 s"); }
+            if (_cam != null) _cam.Lost += () => _camLost = true;
         }
         if (_o.Mic) await AddTrack("mic", "mic.wav", f.OpenMicAsync(_o.MicId));
         if (_o.SystemAudio) await AddTrack("system sound", "system.wav", f.OpenSystemAudioAsync());
@@ -188,9 +191,9 @@ public sealed class RecordingSession : IAsyncDisposable
         if (_screenSize != _size) _notes.Add($"screen.mp4 scaled to {_screenSize.Width}x{_screenSize.Height}");
         foreach (var t in _tracks) t.Wav = new WavWriter(Path.Combine(_folder, t.File));
 
-        if (_finalW != null) _sources.Add(new("final.mp4", "final", 0));
-        _sources.Add(new("screen.mp4", "screen", 0));
-        if (_camW != null) _sources.Add(new("webcam.mp4", "webcam", 0));
+        if (_finalW != null) _sources.Add(new("final.mp4", "final", 0, _size.Width, _size.Height));
+        _sources.Add(new("screen.mp4", "screen", 0, _screenSize.Width, _screenSize.Height));
+        if (_camW != null) _sources.Add(new("webcam.mp4", "webcam", 0, FrameMath.ToEven(_cam!.Size).Width, FrameMath.ToEven(_cam.Size).Height));
         foreach (var t in _tracks) _sources.Add(new(t.File, Path.GetFileNameWithoutExtension(t.File), 0));
 
         // Wait for the first real frame, so the files do not open on black.
@@ -395,7 +398,9 @@ public sealed class RecordingSession : IAsyncDisposable
     void WriteSession()
     {
         var kind = _o.Target switch { WindowTarget => "window", RegionTarget => "region", _ => "monitor" };
-        var file = new SessionFile(1, _startedAt, _size, _rate, kind, _sources, [.. _layoutChanges], _clock.Pauses, _dropped, [.. _notes]);
+        // The full logo path holds the Windows user name, and the folder may be shared, so only the file name is written.
+        var changes = _layoutChanges.Select(c => c with { Layout = c.Layout with { Logo = c.Layout.Logo with { Path = Path.GetFileName(c.Layout.Logo.Path) } } });
+        var file = new SessionFile(1, _startedAt, _size, _rate, kind, _sources, [.. changes], _clock.Pauses, _dropped, [.. _notes]);
         var path = Path.Combine(_folder, "session.json");
         try
         {

@@ -153,6 +153,44 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Webcam_that_fails_to_open_is_skipped()
+    {
+        await using var s = await Start(Options() with { WebcamId = "busy" }, new TestFactory());
+        await Task.Delay(1000);
+        var result = await s.StopAsync();
+        Assert.True(MediaInfo.Read(Path.Combine(result.Folder, "final.mp4")).FrameCount > 0);
+        Assert.False(File.Exists(Path.Combine(result.Folder, "webcam.mp4")));
+        Assert.Contains("webcam lost at 0.0 s", result.Notes);
+    }
+
+    [Fact]
+    public async Task Session_json_keeps_only_the_logo_file_name()
+    {
+        var logo = Path.Combine(Path.GetTempPath(), "logo.png");
+        var o = Options() with { Layout = Layout.Default with { Logo = Layout.Default.Logo with { Visible = true, Path = logo } } };
+        await using var s = await Start(o);
+        await Task.Delay(500);
+        var folder = (await s.StopAsync()).Folder;
+        var text = File.ReadAllText(Path.Combine(folder, "session.json"));
+        // the folder as it would appear inside a JSON string, backslashes escaped
+        Assert.DoesNotContain(System.Text.Json.JsonSerializer.Serialize(Path.GetDirectoryName(logo))[1..^1], text);
+        Assert.All(SessionJson.Deserialize(text).LayoutChanges, c => Assert.Equal("logo.png", c.Layout.Logo.Path));
+    }
+
+    [Fact]
+    public async Task Session_json_records_video_sizes()
+    {
+        var f = new TestFactory { Screen = () => new FakeScreen { SourceSize = new PixelSize(3840, 2160) } };
+        await using var s = await Start(Options(), f);
+        await Task.Delay(500);
+        var folder = (await s.StopAsync()).Folder;
+        var sources = SessionJson.Deserialize(File.ReadAllText(Path.Combine(folder, "session.json"))).Sources;
+        Assert.Equal((3840, 2160), (sources.Single(e => e.Kind == "final").Width, sources.Single(e => e.Kind == "final").Height));
+        Assert.Equal((1920, 1080), (sources.Single(e => e.Kind == "screen").Width, sources.Single(e => e.Kind == "screen").Height));
+        Assert.Null(sources.Single(e => e.Kind == "system").Width);
+    }
+
+    [Fact]
     public async Task Source_closed_stops_and_saves()
     {
         FakeScreen? screen = null;
@@ -160,8 +198,10 @@ public class RecordingSessionTests
         var stoppedByItself = new TaskCompletionSource<RecordingResult>();
         s.StoppedByItself += r => stoppedByItself.TrySetResult(r);
         await Task.Delay(1000);
+        Assert.False(s.HasStopped);
         screen!.RaiseClosed();
         var result = await stoppedByItself.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(s.HasStopped);
         Assert.True(MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4")).FrameCount > 0);
         Assert.True(MediaInfo.Read(Path.Combine(result.Folder, "final.mp4")).FrameCount > 0);
         Assert.True(File.Exists(Path.Combine(result.Folder, "session.json")));
@@ -297,7 +337,8 @@ public class RecordingSessionTests
         public Func<string, IVideoWriter, IVideoWriter> Wrap = (_, w) => w;
 
         public IScreenSource OpenScreen(CaptureTarget t, CanvasDevice d) => Screen?.Invoke() ?? SourceFactory.Instance.OpenScreen(t, d);
-        public Task<IWebcamSource> OpenWebcamAsync(string id, CanvasDevice d) => Task.FromResult(Webcam!);
+        public Task<IWebcamSource> OpenWebcamAsync(string id, CanvasDevice d) =>
+        Webcam is null ? Task.FromException<IWebcamSource>(new UnauthorizedAccessException("Camera in use.")) : Task.FromResult(Webcam);
         public Task<IAudioSource> OpenMicAsync(string? id) => Mic is null ? SourceFactory.Instance.OpenMicAsync(id) : Task.FromResult(Mic);
         public Task<IAudioSource> OpenSystemAudioAsync() => SourceFactory.Instance.OpenSystemAudioAsync();
         public IVideoWriter OpenWriter(string path, PixelSize size, int frameRate, CanvasDevice d, bool hardware, bool withAudio) =>

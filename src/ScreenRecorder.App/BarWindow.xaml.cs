@@ -276,7 +276,14 @@ public sealed partial class BarWindow : Window
     public static bool IsRecordingError(Exception e) =>
         e is CaptureUnavailableException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or COMException;
 
-    void Warn(string text, string caption)
+    // Notes from the recording that the user should see when it stops.
+    public static bool IsShownNote(string n) =>
+        n.StartsWith("webcam lost") || n.StartsWith("mic lost") || n.StartsWith("system sound lost") || n.Contains("disk") || n.StartsWith("The logo");
+
+    // A black first frame means a protected window only. Monitors and regions can be black for real.
+    public static bool BlockedByBlack(CaptureTarget target, bool looksBlack) => looksBlack && target is WindowTarget;
+
+    internal void Warn(string text, string caption)
     {
         // WM_HOTKEY still arrives inside the message box loop, so the busy flag keeps a hotkey from starting a recording there.
         var wasBusy = busy;
@@ -303,7 +310,7 @@ public sealed partial class BarWindow : Window
             var firstCam = settings.Layout.Camera.Visible && settings.WebcamId is null ? (await WebcamSource.ListAsync()).FirstOrDefault().Id : null;
             options = RecordingOptionsBuilder.Build(settings, CurrentTarget, firstCam);
             p = await RecordingSession.PreflightAsync(options);
-            if (p.LooksBlack)
+            if (BlockedByBlack(CurrentTarget, p.LooksBlack))
             {
                 NativeMethods.ShowWarning(hwnd, "This window cannot be captured. It may be protected or running as administrator.", "Record");
                 return;
@@ -340,6 +347,8 @@ public sealed partial class BarWindow : Window
         {
             var s = await RecordingSession.StartAsync(options, p);
             s.StoppedByItself += r => DispatcherQueue.TryEnqueue(() => StoppedByItself(s, r));
+            // A window closed in the first instant fired the event before anyone listened. The queued call runs after busy is cleared.
+            if (s.HasStopped) DispatcherQueue.TryEnqueue(async () => StoppedByItself(s, await s.StopAsync()));
             session = s;
             s.SetLayout(settings.Layout); // camera changes made during the countdown and the start
             ShowElapsed();
@@ -367,7 +376,7 @@ public sealed partial class BarWindow : Window
             return;
         }
         finally { session = null; busy = false; SetState(state); }
-        var lines = result.Notes.Where(n => n.StartsWith("webcam lost") || n.StartsWith("mic lost") || n.StartsWith("system sound lost") || n.Contains("disk")).ToList();
+        var lines = result.Notes.Where(IsShownNote).ToList();
         if (result.DroppedFrames > 0) lines.Insert(0, $"Dropped frames in the finished video: {result.DroppedFrames}");
         if (lines.Count > 0) Warn(string.Join("\n", lines), "Recording");
         System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\"");

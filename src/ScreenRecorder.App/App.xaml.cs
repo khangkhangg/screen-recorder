@@ -8,7 +8,22 @@ public partial class App : Application
 {
     BarWindow? bar;
 
-    public App() => InitializeComponent();
+    bool warning;
+
+    public App()
+    {
+        InitializeComponent();
+        // An error in an async void handler should not close the app, because a recording in progress must still be stopped and saved.
+        UnhandledException += (_, e) =>
+        {
+            System.Diagnostics.Debug.WriteLine(e.Exception);
+            e.Handled = true;
+            if (bar is null || warning) return; // one box at a time, a repeating error does not stack them
+            warning = true;
+            bar.Warn(e.Message, "Screen Recorder");
+            warning = false;
+        };
+    }
 
     [STAThread]
     static void Main()

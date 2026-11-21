@@ -23,6 +23,25 @@ public class RecordingErrorTests
     public void Shown_errors(Exception e, bool shown) => Assert.Equal(shown, BarWindow.IsRecordingError(e));
 
     [Theory]
+    [InlineData("webcam lost at 3.0 s", true)]
+    [InlineData("mic lost at 1.0 s", true)]
+    [InlineData("system sound lost at 1.0 s", true)]
+    [InlineData("disk error while saving: full", true)]
+    [InlineData("The logo file was not found.", true)]
+    [InlineData("encoder fell behind", false)]
+    [InlineData("screen.mp4 scaled to 1920x1080", false)]
+    public void Stop_notes_shown(string note, bool shown) => Assert.Equal(shown, BarWindow.IsShownNote(note));
+
+    [Fact]
+    public void Black_first_frame_blocks_only_windows()
+    {
+        Assert.True(BarWindow.BlockedByBlack(new WindowTarget(1), true));
+        Assert.False(BarWindow.BlockedByBlack(new WindowTarget(1), false));
+        Assert.False(BarWindow.BlockedByBlack(new MonitorTarget(1), true));
+        Assert.False(BarWindow.BlockedByBlack(new RegionTarget(1, 0, 0, 100, 100), true));
+    }
+
+    [Theory]
     [InlineData(0x52, true, true, false, false, "Ctrl+Shift+R")]
     [InlineData(0x7B, false, false, true, true, "Alt+Win+F12")]
     [InlineData(0x35, true, false, false, false, "Ctrl+5")]

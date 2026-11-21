@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace ScreenRecorder.Core;
 
-public record SourceEntry(string File, string Kind, double OffsetSeconds);
+public record SourceEntry(string File, string Kind, double OffsetSeconds, int? Width = null, int? Height = null);
 public record LayoutChange(double AtSeconds, Layout Layout);
 public record PauseEntry(double AtSeconds, double DurationSeconds);
 
