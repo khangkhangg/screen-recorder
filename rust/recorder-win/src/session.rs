@@ -107,11 +107,12 @@ impl Shared {
         if number < *saved {
             return;
         }
-        *saved = number;
         let path = self.folder.join("session.json");
         let temp = self.folder.join("session.json.tmp");
         // A full disk, or another program holding the file open, leaves the last good session.json in place.
-        let _ = fs::write(&temp, text).and_then(|()| fs::rename(&temp, &path));
+        if fs::write(&temp, text).and_then(|()| fs::rename(&temp, &path)).is_ok() {
+            *saved = number;
+        }
     }
 
     fn note(&self, text: String, clock: &RecordingClock) {
@@ -135,9 +136,7 @@ impl RecordingSession {
     }
 
     pub fn preflight_with(o: &RecordingOptions, factory: &dyn SourceFactory) -> Result<PreflightResult> {
-        if !(1..=120).contains(&o.frame_rate) {
-            return Err(Error::Invalid(format!("The frame rate must be from 1 to 120 frames per second, not {}.", o.frame_rate)));
-        }
+        check_frame_rate(o.frame_rate)?;
         let files = 1 + u32::from(o.write_final) + u32::from(o.webcam_id.is_some());
         let encoders = check_encoders(files);
         let max = max_encoder_size();
@@ -177,6 +176,11 @@ impl RecordingSession {
     }
 
     pub fn start_with(o: RecordingOptions, p: &PreflightResult, factory: Box<dyn SourceFactory>) -> Result<RecordingSession> {
+        // A hand-built result is not checked by preflight, and a 0 rate or size would divide by zero later.
+        check_frame_rate(p.frame_rate)?;
+        if [p.frame_size, p.screen_file_size].iter().any(|s| s.width < 2 || s.height < 2) {
+            return Err(Error::Invalid("The video size must be at least 2 by 2 pixels.".into()));
+        }
         let (name, started_at) = local_stamp(SystemTime::now())?;
         let folder = create_folder(&o.output_root, &name)?;
         let file = SessionFile {
@@ -475,6 +479,8 @@ impl Recorder {
             behind_noted: false,
         };
         recorder.warm_up()?;
+        // Sound captured during the warm-up would make every sound late by the warm-up's length.
+        recorder.drain_sound();
         recorder.clock.start();
         Ok(recorder)
     }
@@ -565,18 +571,22 @@ impl Recorder {
         Ok(())
     }
 
-    /// Ends webcam.mp4 where the camera went away, changed size or its writer failed, and records on without the camera.
+    /// Ends webcam.mp4 where the camera went away or changed size, and records on without the camera.
     fn lose_camera(&mut self) {
         self.note(format!("webcam lost at {:.1} s", self.seconds()));
         self.cam = None;
         self.last_cam = None;
+        self.end_camera_file();
+    }
+
+    /// The camera file is optional and already has its note, so its finish error does not use up the disk note.
+    fn end_camera_file(&mut self) {
         if let Some(mut w) = self.cam_w.take() {
-            let r = w.finish();
-            self.quietly(r);
+            let _ = w.finish();
         }
     }
 
-    /// Writes webcam.mp4 frames up to `due`. A failed write ends only the camera file.
+    /// Writes webcam.mp4 frames up to `due`. A failed write ends only the camera file, and final.mp4 keeps the camera.
     fn write_camera(&mut self, due: i64) -> Result<()> {
         let (Some(w), Some(frame)) = (self.cam_w.as_mut(), self.last_cam.as_ref()) else { return Ok(()) };
         if self.cam_written >= due {
@@ -584,7 +594,8 @@ impl Recorder {
         }
         let texture = self.compositor.draw_camera_file(frame, to_even(self.cam_frame))?;
         if (self.cam_written..due).try_for_each(|i| w.write_frame(texture, i)).is_err() {
-            self.lose_camera();
+            self.note(format!("webcam file stopped at {:.1} s", self.seconds()));
+            self.end_camera_file();
             return Ok(());
         }
         self.cam_written = due;
@@ -695,12 +706,25 @@ impl Recorder {
         self.feed_final_sound(false)?;
         // Sound made while paused is thrown away, so it does not play after resume.
         if paused {
-            let mut drain = [0.0f32; 4096];
-            for source in self.tracks.iter_mut().filter_map(|t| t.source.as_mut()) {
-                while source.read(&mut drain) > 0 {}
-            }
+            self.drain_sound();
         }
         Ok(())
+    }
+
+    /// Throws away every sample the sound sources hold, and returns how many there were.
+    fn drain_sound(&mut self) -> usize {
+        let mut drain = [0.0f32; 4096];
+        let mut thrown = 0;
+        for source in self.tracks.iter_mut().filter_map(|t| t.source.as_mut()) {
+            loop {
+                let n = source.read(&mut drain);
+                if n == 0 {
+                    break;
+                }
+                thrown += n;
+            }
+        }
+        thrown
     }
 
     /// Gives final.mp4 sound only up to its last frame handed over, or all of it when `all`.
@@ -783,6 +807,13 @@ impl Drop for Recorder {
         *lock(&self.shared.result) = Some(result);
         self.shared.done.notify_all();
     }
+}
+
+fn check_frame_rate(rate: i32) -> Result<()> {
+    if (1..=120).contains(&rate) {
+        return Ok(());
+    }
+    Err(Error::Invalid(format!("The frame rate must be from 1 to 120 frames per second, not {rate}.")))
 }
 
 /// A NaN from a broken source would pass through `clamp`, so it becomes silence.
@@ -869,9 +900,9 @@ mod tests {
         assert_eq!(names, [root.join("a"), root.join("a (2)"), root.join("a (3)")]);
     }
 
-    #[test]
-    fn slow_session_json_write_leaves_the_state_lock_free() {
-        let folder = std::env::temp_dir().join(format!("recorder-session-save-{}", std::process::id()));
+    /// A `Shared` with an empty session file, in a new folder named for the test.
+    fn test_shared(name: &str) -> (Arc<Shared>, PathBuf) {
+        let folder = std::env::temp_dir().join(format!("recorder-session-{name}-{}", std::process::id()));
         fs::create_dir_all(&folder).unwrap();
         let file = SessionFile {
             version: 1,
@@ -894,6 +925,28 @@ mod tests {
             result: Mutex::new(None),
             done: Condvar::new(),
         });
+        (shared, folder)
+    }
+
+    #[test]
+    fn failed_save_does_not_block_an_older_text() {
+        let (shared, folder) = test_shared("failed-save");
+        let clock = RecordingClock::new(30, Box::new(|| Duration::ZERO));
+        // A folder in the temp file's place makes the write fail.
+        fs::create_dir(folder.join("session.json.tmp")).unwrap();
+        shared.state().saves = 5;
+        shared.note("newer".into(), &clock);
+        fs::remove_dir(folder.join("session.json.tmp")).unwrap();
+        shared.state().saves = 2;
+        shared.note("older".into(), &clock);
+        let text = fs::read_to_string(folder.join("session.json"));
+        fs::remove_dir_all(&folder).unwrap();
+        assert!(text.unwrap().contains("older"));
+    }
+
+    #[test]
+    fn slow_session_json_write_leaves_the_state_lock_free() {
+        let (shared, folder) = test_shared("save");
         // Holding the write lock stands in for a disk that takes long to write.
         let writing = lock(&shared.saved);
         let saver = {

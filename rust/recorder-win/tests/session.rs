@@ -9,9 +9,16 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use windows::core::HSTRING;
+use windows::Win32::Media::MediaFoundation::{
+    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Video, MFVideoFormat_RGB32, MF_MT_DEFAULT_STRIDE,
+    MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+};
+
 use media_info::MediaInfo;
 use recorder_core::frame_math::PixelSize;
-use recorder_core::layout::Layout;
+use recorder_core::layout::{camera_rect, Layout};
 use recorder_core::session::{deserialize_session, SessionFile};
 use recorder_win::fakes::{folder_name, FakeFactory, FakeMic, FakeQueue, FakeScreen, FakeWebcam, FakeWriter};
 use recorder_win::{
@@ -213,7 +220,7 @@ fn disk_full_stops_and_keeps_files_playable() {
     let (o, _root) = options();
     let f = FakeFactory {
         wrap: Some(Box::new(|name, w| {
-            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(60), stall: None }) } else { w })
+            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(60), stall: None, failed: false }) } else { w })
         })),
         ..FakeFactory::default()
     };
@@ -311,7 +318,7 @@ fn slow_final_encoder_drops_final_frames_only() {
         wrap: Some(Box::new(|name, w| {
             // An encoder at half the frame rate falls behind while recording and catches up at stop.
             Ok(if name == "final.mp4" {
-                Box::new(FakeWriter { inner: w, queue: Some(Arc::new(FakeQueue::new(30))), fail_at: None, stall: None })
+                Box::new(FakeWriter { inner: w, queue: Some(Arc::new(FakeQueue::new(30))), fail_at: None, stall: None, failed: false })
             } else {
                 w
             })
@@ -529,18 +536,24 @@ fn failing_webcam_writer_keeps_recording() {
     let f = FakeFactory {
         webcam: Some(FakeWebcam::default()),
         wrap: Some(Box::new(|name, w| {
-            Ok(if name == "webcam.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(9), stall: None }) } else { w })
+            Ok(if name == "webcam.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(9), stall: None, failed: false }) } else { w })
         })),
-        ..FakeFactory::default()
+        // A red fake screen, so the green fake camera stands out in final.mp4.
+        ..fake_screen(1920, 1080)
     };
     let s = start(&RecordingOptions { webcam_id: Some("fake".into()), ..o }, f);
     wait(2000);
     let result = stop(s);
-    assert!(result.notes.iter().any(|n| n.starts_with("webcam lost at")), "{:?}", result.notes);
+    assert!(result.notes.iter().any(|n| n.starts_with("webcam file stopped at")), "{:?}", result.notes);
+    assert!(!result.notes.iter().any(|n| n.starts_with("webcam lost")), "{:?}", result.notes);
     let screen = info(&result.folder, "screen.mp4").duration;
     assert!((1.9..=2.2).contains(&screen), "{screen}");
     let last = info(&result.folder, "final.mp4").duration;
     assert!((1.9..=2.2).contains(&last), "{last}");
+    // The last frame of final.mp4, long after the failure, still shows the camera.
+    let r = camera_rect(&Layout::default().camera, PixelSize { width: 1920, height: 1080 });
+    let [_, green, red, _] = last_frame_pixel(&result.folder.join("final.mp4"), (r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32);
+    assert!(green > 150 && red < 80, "green {green}, red {red}");
 }
 
 #[test]
@@ -552,7 +565,7 @@ fn stuck_final_encoder_bounds_the_stop() {
     let f = FakeFactory {
         wrap: Some(Box::new(move |name, w| {
             Ok(if name == "final.mp4" {
-                Box::new(FakeWriter { inner: w, queue: Some(queue_in.clone()), fail_at: None, stall: None })
+                Box::new(FakeWriter { inner: w, queue: Some(queue_in.clone()), fail_at: None, stall: None, failed: false })
             } else {
                 w
             })
@@ -575,7 +588,7 @@ fn slow_encoder_start_drops_no_frames() {
     let f = FakeFactory {
         wrap: Some(Box::new(|name, w| {
             let stall = Some(Duration::from_millis(400));
-            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: None, stall }) } else { w })
+            Ok(if name == "screen.mp4" { Box::new(FakeWriter { inner: w, queue: None, fail_at: None, stall, failed: false }) } else { w })
         })),
         ..fake_screen(1920, 1080)
     };
@@ -585,4 +598,111 @@ fn slow_encoder_start_drops_no_frames() {
     assert_eq!(0, result.dropped_frames);
     let screen = info(&result.folder, "screen.mp4").frame_count;
     assert_eq!(screen, info(&result.folder, "final.mp4").frame_count);
+}
+
+/// The BGRA colour at `x`, `y` of the last frame of a video file.
+fn last_frame_pixel(path: &Path, x: u32, y: u32) -> [u8; 4] {
+    let mut attributes = None;
+    unsafe { MFCreateAttributes(&mut attributes, 1) }.unwrap();
+    let attributes = attributes.unwrap();
+    unsafe { attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1) }.unwrap();
+    let reader = unsafe { MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), &attributes) }.unwrap();
+    let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+    let wanted = unsafe { MFCreateMediaType() }.unwrap();
+    unsafe { wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video) }.unwrap();
+    unsafe { wanted.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32) }.unwrap();
+    unsafe { reader.SetCurrentMediaType(stream, None, &wanted) }.unwrap();
+    let current = unsafe { reader.GetCurrentMediaType(stream) }.unwrap();
+    let size = unsafe { current.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap();
+    let (width, height) = ((size >> 32) as u32, size as u32);
+    // RGB32 rows run bottom up when the stride is negative.
+    let stride = unsafe { current.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.map_or(width as i32 * 4, |s| s as i32);
+    let row = if stride < 0 { height - 1 - y } else { y };
+    let mut last = None;
+    loop {
+        let (mut flags, mut sample) = (0, None);
+        unsafe { reader.ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample)) }.unwrap();
+        if sample.is_some() {
+            last = sample;
+        }
+        if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 | MF_SOURCE_READERF_ERROR.0) as u32 != 0 {
+            break;
+        }
+    }
+    let buffer = unsafe { last.unwrap().ConvertToContiguousBuffer() }.unwrap();
+    let (mut data, mut length) = (std::ptr::null_mut(), 0);
+    unsafe { buffer.Lock(&mut data, None, Some(&mut length)) }.unwrap();
+    let i = (row * width + x) as usize * 4;
+    let pixel = unsafe { std::slice::from_raw_parts(data, length as usize) }[i..i + 4].try_into().unwrap();
+    unsafe { buffer.Unlock() }.unwrap();
+    pixel
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn sound_from_before_the_clock_starts_is_thrown_away() {
+    let (o, _root) = options();
+    let f = FakeFactory { backlog_mic: true, ..fake_screen(1920, 1080) };
+    let s = start(&RecordingOptions { mic: true, system_audio: false, ..o }, f);
+    wait(1000);
+    let folder = stop(s).folder;
+    let bytes = fs::read(folder.join("mic.wav")).unwrap();
+    let samples: Vec<f32> = bytes[44..].as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)).collect();
+    let old = samples.iter().filter(|&&s| s == 0.5).count();
+    assert_eq!(0, old, "{old} samples from before the start");
+    assert_eq!(Some(&-0.5), samples.iter().find(|&&s| s != 0.0));
+}
+
+#[test]
+fn start_refuses_a_bad_preflight_result() {
+    let (o, _root) = options();
+    let good = PixelSize { width: 1920, height: 1080 };
+    let p = PreflightResult {
+        encoders: EncoderSupport::Hardware,
+        frame_size: good,
+        scaled_down: false,
+        looks_black: false,
+        frame_rate: 60,
+        screen_file_size: good,
+    };
+    let tiny = PixelSize { width: 1, height: 1080 };
+    for bad in [
+        PreflightResult { frame_rate: 0, ..p },
+        PreflightResult { frame_rate: 121, ..p },
+        PreflightResult { frame_size: tiny, ..p },
+        PreflightResult { screen_file_size: PixelSize { width: 1920, height: 1 }, ..p },
+    ] {
+        let started = RecordingSession::start_with(o.clone(), &bad, Box::new(FakeFactory::default()));
+        assert!(matches!(started, Err(Error::Invalid(_))), "{bad:?}");
+    }
+    assert!(!o.output_root.exists());
+}
+
+#[test]
+#[ignore = "needs the desktop"]
+fn webcam_file_error_leaves_the_disk_note_for_others() {
+    let saving = |screen_fails: bool| {
+        let (o, _root) = options();
+        let f = FakeFactory {
+            webcam: Some(FakeWebcam::default()),
+            wrap: Some(Box::new(move |name, w| {
+                Ok(match name {
+                    "webcam.mp4" => Box::new(FakeWriter { inner: w, queue: None, fail_at: Some(9), stall: None, failed: false }),
+                    // Writes work, but finishing the file fails like a full disk.
+                    "screen.mp4" => Box::new(FakeWriter { inner: w, queue: None, fail_at: None, stall: None, failed: screen_fails }),
+                    _ => w,
+                })
+            })),
+            ..fake_screen(1920, 1080)
+        };
+        let s = start(&RecordingOptions { webcam_id: Some("fake".into()), ..o }, f);
+        wait(1000);
+        let notes = stop(s).notes;
+        (notes.iter().filter(|n| n.starts_with("disk error while saving")).count(), notes)
+    };
+    // The webcam file's own error is not a disk note, so the later screen.mp4 error gets it.
+    let (count, notes) = saving(false);
+    assert_eq!(0, count, "{notes:?}");
+    let (count, notes) = saving(true);
+    assert_eq!(1, count, "{notes:?}");
 }

@@ -124,13 +124,44 @@ impl AudioIn for FakeMic {
     }
 }
 
+/// One second of 48 kHz stereo floats.
+const SOUND_SECOND: usize = 96_000;
+
+/// A microphone that already holds 1 second of samples of 0.5 when it opens, then delivers -0.5 at the real rate.
+pub struct BacklogMic {
+    opened: Instant,
+    given: usize,
+}
+
+impl AudioIn for BacklogMic {
+    fn read(&mut self, out: &mut [f32]) -> usize {
+        let ready = (SOUND_SECOND + (self.opened.elapsed().as_secs_f64() * SOUND_SECOND as f64) as usize) & !1;
+        let n = out.len().min(ready.saturating_sub(self.given)) & !1;
+        for (i, o) in out[..n].iter_mut().enumerate() {
+            *o = if self.given + i < SOUND_SECOND { 0.5 } else { -0.5 };
+        }
+        self.given += n;
+        n
+    }
+
+    fn is_lost(&self) -> bool {
+        false
+    }
+}
+
 /// Wraps a real writer. `queue` replaces its frames_behind, from frame `fail_at` on every write fails like a full disk,
 /// and writing frame 0 first sleeps for `stall`, like an encoder that starts up slowly.
+/// `failed` is set by a failed write, and then `finish` fails too, as the real writer does.
 pub struct FakeWriter {
     pub inner: Box<dyn VideoOut>,
     pub queue: Option<Arc<FakeQueue>>,
     pub fail_at: Option<i64>,
     pub stall: Option<Duration>,
+    pub failed: bool,
+}
+
+fn disk_full() -> Error {
+    Error::Io(io::Error::other("There is not enough space on the disk."))
 }
 
 /// An encoder that finishes `rate` frames per second, so frames sent faster wait in its queue.
@@ -163,7 +194,8 @@ impl FakeQueue {
 impl VideoOut for FakeWriter {
     fn write_frame(&mut self, texture: &ID3D11Texture2D, index: i64) -> Result<()> {
         if self.fail_at.is_some_and(|at| index >= at) {
-            return Err(Error::Io(io::Error::other("There is not enough space on the disk.")));
+            self.failed = true;
+            return Err(disk_full());
         }
         if let (0, Some(stall)) = (index, self.stall) {
             std::thread::sleep(stall);
@@ -186,7 +218,11 @@ impl VideoOut for FakeWriter {
     }
 
     fn finish(&mut self) -> Result<()> {
-        self.inner.finish()
+        let r = self.inner.finish();
+        if self.failed {
+            return Err(disk_full());
+        }
+        r
     }
 }
 
@@ -202,6 +238,8 @@ pub struct FakeFactory {
     pub wrap: Option<Wrap>,
     /// The fake webcam's frame size, 640x480 when not set.
     pub webcam_size: Option<PixelSize>,
+    /// Opens a `BacklogMic` as the microphone.
+    pub backlog_mic: bool,
 }
 
 impl SourceFactory for FakeFactory {
@@ -220,6 +258,9 @@ impl SourceFactory for FakeFactory {
     }
 
     fn open_mic(&self, id: Option<&str>) -> Result<Box<dyn AudioIn>> {
+        if self.backlog_mic {
+            return Ok(Box::new(BacklogMic { opened: Instant::now(), given: 0 }));
+        }
         match &self.mic {
             Some(mic) => Ok(Box::new(mic.clone())),
             None => RealFactory.open_mic(id),
