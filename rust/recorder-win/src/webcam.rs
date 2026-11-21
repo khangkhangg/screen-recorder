@@ -321,7 +321,7 @@ fn read(reader: &IMFSourceReader, stream: u32, format: &mut Format, device: &Dev
 }
 
 /// Every frame gets a new texture, so a frame a caller holds is never overwritten.
-fn upload(pixels: &[u8], size: PixelSize, device: &Device) -> windows::core::Result<Frame> {
+pub(crate) fn upload(pixels: &[u8], size: PixelSize, device: &Device) -> windows::core::Result<Frame> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: size.width as u32,
         Height: size.height as u32,

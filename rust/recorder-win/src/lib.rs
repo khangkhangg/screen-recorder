@@ -1,8 +1,12 @@
 mod audio;
 mod compositor;
 mod error;
+mod factory;
+#[cfg(any(test, feature = "fakes"))]
+pub mod fakes;
 mod gfx;
 mod screen;
+mod session;
 mod targets;
 mod video;
 mod wav;
@@ -13,6 +17,8 @@ pub use compositor::Compositor;
 pub use error::{Error, Result};
 pub use gfx::Device;
 pub use screen::{looks_black, Frame, Screen, ScreenSource};
+pub use factory::{RealFactory, SourceFactory};
+pub use session::{PreflightResult, RecordingOptions, RecordingResult, RecordingSession};
 pub use targets::{find_window, monitors, windows, CaptureTarget, MonitorInfo, WindowInfo};
 pub use video::{check_encoders, max_encoder_size, EncoderSupport, VideoOut, VideoWriter};
 pub use wav::WavWriter;

@@ -45,6 +45,7 @@ name = "recorder-win"
 version = "0.1.0"
 dependencies = [
  "recorder-core",
+ "recorder-win",
  "windows",
 ]
 
