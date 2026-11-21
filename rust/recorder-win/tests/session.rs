@@ -4,7 +4,7 @@ mod media_info;
 use std::fs;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -50,6 +50,7 @@ fn options() -> (RecordingOptions, Root) {
         system_audio: true,
         layout: Layout::default(),
         write_final: true,
+        extra_notes: Vec::new(),
     };
     (o, Root(root))
 }
@@ -341,6 +342,35 @@ fn slow_final_encoder_drops_final_frames_only() {
 
 #[test]
 #[ignore = "needs the desktop"]
+fn result_reports_what_the_session_used() {
+    let (o, _root) = options();
+    let o = RecordingOptions { extra_notes: vec!["a note from the caller".into()], ..o };
+    // The first writer fails like a missing hardware encoder, so the session falls back to software.
+    let first = Arc::new(AtomicBool::new(true));
+    let f = FakeFactory {
+        wrap: Some(Box::new(move |_name, w| {
+            if first.swap(false, Ordering::SeqCst) {
+                drop(w);
+                return Err(Error::NotSupported("No hardware encoder.".into()));
+            }
+            Ok(w)
+        })),
+        ..fake_screen(1920, 1080)
+    };
+    let p = RecordingSession::preflight_with(&o, &f).unwrap();
+    assert_eq!(60, p.frame_rate);
+    let s = RecordingSession::start_with(o.clone(), &p, Box::new(f)).unwrap();
+    wait(500);
+    let r = stop(s);
+    assert_eq!(30, r.frame_rate);
+    assert_eq!(PixelSize { width: 1920, height: 1080 }, r.frame_size);
+    assert_eq!(PixelSize { width: 1920, height: 1080 }, r.screen_file_size);
+    assert_eq!(1, r.notes.iter().filter(|n| *n == "a note from the caller").count(), "{:?}", r.notes);
+    assert!(session(&r.folder).notes.iter().any(|n| n == "a note from the caller"));
+}
+
+#[test]
+#[ignore = "needs the desktop"]
 fn large_frame_is_capped_at_30() {
     let (o, _root) = options();
     assert_eq!(30, RecordingSession::preflight_with(&o, &fake_screen(3840, 2160)).unwrap().frame_rate);
@@ -480,6 +510,7 @@ fn output_root_on_a_missing_drive_is_a_disk_error() {
         system_audio: false,
         layout: Layout::default(),
         write_final: true,
+        extra_notes: Vec::new(),
     };
     let size = PixelSize { width: 1920, height: 1080 };
     let p = PreflightResult {

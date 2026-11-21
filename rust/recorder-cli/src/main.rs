@@ -1,6 +1,6 @@
 mod args;
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use args::{Command, ListKind, RecordArgs, ShotArgs, Target};
 use recorder_win::{
-    find_window, init_process, monitors, screenshot, windows, AudioSource, CaptureTarget, EncoderSupport, Error,
-    RecordingOptions, RecordingSession, WebcamSource,
+    find_window, init_process, monitors, on_console_stop, screenshot, videos_folder, windows, AudioSource,
+    CaptureTarget, EncoderSupport, Error, RecordingOptions, RecordingSession, WebcamSource,
 };
 use serde_json::{json, Value};
 
@@ -26,12 +26,14 @@ const USAGE: &str = r#"screenrec records the screen and takes screenshots.
 
 Monitors are numbered from 1, in the order `list monitors` prints. --window matches part of a
 window title, ignoring case. --region is in pixels of --monitor N (default 1). --camera-pos is
-in fractions from 0 to 1 of the video. Files go to Videos\ScreenRecorder unless --out is given.
+in fractions from 0 to 1 of the video. --seconds is at most 86400. Files go to the Videos
+folder's ScreenRecorder folder unless --out is given.
 
 `record` runs until --seconds pass, Ctrl+C, or the line `stop` on standard input. The lines
 `pause` and `resume` pause and resume it. It prints `recording` on standard error once started.
 
-Every command prints 1 JSON object on standard output. Messages go to standard error.
+Every command prints 1 JSON object on standard output, except --help and --version, which print
+plain text. Errors print nothing on standard output. Messages go to standard error.
 Exit codes: 0 success, 1 failure while running, 2 bad arguments or a target that cannot be found."#;
 
 /// An exit code and a message for standard error.
@@ -46,12 +48,12 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let code = match args::parse(&argv).map(run) {
         Err(message) => {
-            eprintln!("{message}");
+            say(&message);
             2
         }
         Ok(Ok(())) => 0,
         Ok(Err((code, message))) => {
-            eprintln!("{message}");
+            say(&message);
             code
         }
     };
@@ -59,13 +61,24 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Writes to standard output. A reader that closed the pipe is not a reason to abort.
+fn print(text: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "{text}");
+}
+
+/// Writes to standard error, and ignores a closed pipe like `print`.
+fn say(text: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{text}");
+}
+
 fn run(command: Command) -> Result<(), Failure> {
     match command {
-        Command::Help => println!("{USAGE}"),
-        Command::Version => println!("screenrec {}", env!("CARGO_PKG_VERSION")),
+        // The 2 exceptions to the 1 JSON object rule: plain text for a person.
+        Command::Help => print(USAGE),
+        Command::Version => print(&format!("screenrec {}", env!("CARGO_PKG_VERSION"))),
         Command::List(kind) => {
             init_process().map_err(engine)?;
-            print(list(kind));
+            print(&list(kind).to_string());
         }
         Command::Screenshot(a) => {
             init_process().map_err(engine)?;
@@ -77,10 +90,6 @@ fn run(command: Command) -> Result<(), Failure> {
         }
     }
     Ok(())
-}
-
-fn print(v: Value) {
-    println!("{v}");
 }
 
 /// A target the capture API refuses, such as a region off the screen, is a bad argument.
@@ -141,16 +150,18 @@ fn capture_target(target: &Target) -> Result<CaptureTarget, Failure> {
 }
 
 fn output_root(out: Option<String>) -> PathBuf {
-    out.map(PathBuf::from).unwrap_or_else(|| match std::env::var("USERPROFILE") {
-        Ok(profile) => PathBuf::from(profile).join("Videos").join("ScreenRecorder"),
-        Err(_) => PathBuf::from("ScreenRecorder"),
+    out.map(PathBuf::from).unwrap_or_else(|| {
+        let videos = videos_folder().or_else(|| {
+            std::env::var("USERPROFILE").ok().map(|profile| PathBuf::from(profile).join("Videos"))
+        });
+        videos.unwrap_or_default().join("ScreenRecorder")
     })
 }
 
 fn take_screenshot(a: ShotArgs) -> Result<(), Failure> {
     let target = capture_target(&a.target)?;
     let r = screenshot::capture(&target, &output_root(a.out), a.copy).map_err(engine)?;
-    print(json!({ "path": r.path, "width": r.width, "height": r.height, "copied": r.copied }));
+    print(&json!({ "path": r.path, "width": r.width, "height": r.height, "copied": r.copied }).to_string());
     Ok(())
 }
 
@@ -169,6 +180,7 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
         system_audio: a.system_audio,
         layout: a.layout,
         write_final: !a.no_final,
+        extra_notes: Vec::new(),
     };
     let p = RecordingSession::preflight(&o).map_err(engine)?;
     if p.looks_black && matches!(o.target, CaptureTarget::Window(_)) {
@@ -184,21 +196,24 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
         let s = p.frame_size;
         notes.push(format!("The video is scaled down to {}x{}, the largest size the encoder takes.", s.width, s.height));
     }
+    let size = p.frame_size;
     if p.encoders == EncoderSupport::SoftwareOnly {
         // The engine adds its own note for this, so it only goes to standard error.
-        eprintln!("No hardware encoder, so it records at 30 frames per second with the software encoder.");
-    } else if p.frame_rate < o.frame_rate {
+        say("No hardware encoder, so it records at 30 frames per second with the software encoder.");
+    } else if p.frame_rate < o.frame_rate && i64::from(size.width) * i64::from(size.height) > 2560 * 1440 {
         notes.push("The screen is larger than 2560x1440, so it records at 30 frames per second.".to_string());
     }
     for n in &notes {
-        eprintln!("{n}");
+        say(n);
     }
+    o.extra_notes = notes;
 
-    on_console_stop();
+    // Without the handler Ctrl+C still ends the process, so a failure here does not stop the recording.
+    let _ = on_console_stop(stop_on_console);
     let session = RecordingSession::start(o, &p).map_err(engine)?;
-    eprintln!("recording");
+    say("recording");
     // Counted from here, because `start` spends up to 3 seconds warming up the encoders.
-    let deadline = a.seconds.map(|s| Instant::now() + Duration::from_secs_f64(s));
+    let deadline = a.seconds.and_then(|s| Instant::now().checked_add(s));
 
     let lines = read_lines();
     let mut input_open = true;
@@ -225,15 +240,18 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
 
     let seconds = session.elapsed().as_secs_f64();
     let r = session.stop();
-    notes.extend(r.notes);
-    print(json!({
-        "folder": r.folder, "files": r.files, "droppedFrames": r.dropped_frames, "notes": notes,
-        "frameRate": p.frame_rate, "frameWidth": p.frame_size.width, "frameHeight": p.frame_size.height,
-        "seconds": seconds,
-    }));
     if r.files.is_empty() {
-        return Err((1, "The recording saved no files.".into()));
+        return Err((1, format!("The recording saved no files. {}", r.notes.join(" "))));
     }
+    print(
+        &json!({
+            "folder": r.folder, "files": r.files, "droppedFrames": r.dropped_frames, "notes": r.notes,
+            "frameRate": r.frame_rate, "frameWidth": r.frame_size.width, "frameHeight": r.frame_size.height,
+            "screenWidth": r.screen_file_size.width, "screenHeight": r.screen_file_size.height,
+            "seconds": seconds,
+        })
+        .to_string(),
+    );
     Ok(())
 }
 
@@ -251,21 +269,14 @@ fn read_lines() -> mpsc::Receiver<String> {
     lines
 }
 
-/// Ctrl+C, Ctrl+Break and closing the console stop the recording. The handler holds the
-/// process open until the files are finished, because Windows ends it when the handler returns.
-fn on_console_stop() {
-    extern "system" fn handler(_event: u32) -> i32 {
-        STOP.store(true, SeqCst);
-        let end = Instant::now() + Duration::from_secs(10);
-        while !DONE.load(SeqCst) && Instant::now() < end {
-            thread::sleep(Duration::from_millis(50));
-        }
-        1
+/// Ctrl+C, Ctrl+Break and closing the console stop the recording. This holds the process open
+/// until the files are finished, at most 10 seconds. When the console window is closed, Windows
+/// ends the process about 5 seconds after the event whatever this waits for, so a slow catch-up
+/// of final.mp4 can be cut short. The fragmented MP4 files still play.
+fn stop_on_console() {
+    STOP.store(true, SeqCst);
+    let end = Instant::now() + Duration::from_secs(10);
+    while !DONE.load(SeqCst) && Instant::now() < end {
+        thread::sleep(Duration::from_millis(50));
     }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
-    }
-    // Without a handler, Ctrl+C still ends the process, so a failure here is not fatal.
-    let _ = unsafe { SetConsoleCtrlHandler(Some(handler), 1) };
 }

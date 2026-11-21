@@ -139,7 +139,8 @@ fn first_frame(target: &CaptureTarget) -> Result<(Device, Frame)> {
             return Ok((device, frame));
         }
         if Instant::now() > deadline {
-            return Err(Error::CaptureUnavailable("No frame arrived within 2 seconds.".into()));
+            // A slow graphics chip, not a bad target, so this is a failure while running.
+            return Err(Error::Device("No frame arrived within 2 seconds.".into()));
         }
         sleep(Duration::from_millis(20));
     }

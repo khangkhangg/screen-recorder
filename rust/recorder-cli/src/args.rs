@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use recorder_core::layout::{CameraShape, Corner, Layout};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +45,7 @@ pub struct RecordArgs {
     pub camera: Option<Option<String>>,
     pub layout: Layout,
     pub no_final: bool,
-    pub seconds: Option<f64>,
+    pub seconds: Option<Duration>,
 }
 
 type Args<'a> = std::iter::Peekable<std::slice::Iter<'a, String>>;
@@ -77,7 +79,9 @@ fn list(args: &[String]) -> Result<Command, String> {
 
 fn screenshot(args: &mut Args) -> Result<Command, String> {
     let (mut target, mut out, mut copy) = (TargetFlags::default(), None, true);
+    let mut seen = Vec::new();
     while let Some(flag) = args.next() {
+        once(flag, &mut seen)?;
         if target.take(flag, args)? {
             continue;
         }
@@ -96,7 +100,9 @@ fn record(args: &mut Args) -> Result<Command, String> {
         (None, 60, None, false, None, false, None);
     let mut layout = Layout::default();
     layout.camera.visible = false;
+    let mut seen = Vec::new();
     while let Some(flag) = args.next() {
+        once(flag, &mut seen)?;
         if target.take(flag, args)? {
             continue;
         }
@@ -147,9 +153,10 @@ fn record(args: &mut Args) -> Result<Command, String> {
             "--no-final" => no_final = true,
             "--seconds" => {
                 let v = value(flag, args)?;
-                match v.parse::<f64>() {
-                    Ok(n) if n > 0.0 && n.is_finite() => seconds = Some(n),
-                    _ => return Err(format!("--seconds needs a number above 0, not \"{v}\".")),
+                // A day at most, so the deadline can never overflow.
+                match v.parse::<f64>().ok().filter(|n| *n > 0.0 && *n <= 86_400.0) {
+                    Some(n) => seconds = Duration::try_from_secs_f64(n).ok(),
+                    None => return Err(format!("--seconds needs a number above 0 and at most 86400, not \"{v}\".")),
                 }
             }
             _ => return Err(unknown(flag, "record")),
@@ -169,26 +176,21 @@ struct TargetFlags {
 impl TargetFlags {
     /// Takes a target flag and its value, and returns false for any other flag.
     fn take(&mut self, flag: &str, args: &mut Args) -> Result<bool, String> {
-        let twice = || format!("{flag} is given twice.");
         match flag {
             "--monitor" => {
                 let v = value(flag, args)?;
-                let n = match v.parse::<usize>() {
-                    Ok(n) if n >= 1 => n,
+                match v.parse::<usize>() {
+                    Ok(n) if n >= 1 => self.monitor = Some(n),
                     _ => return Err(format!("--monitor needs a monitor number from 1 up, not \"{v}\".")),
-                };
-                self.monitor.replace(n).map_or(Ok(true), |_| Err(twice()))
+                }
             }
-            "--window" => {
-                let v = value(flag, args)?;
-                self.window.replace(v).map_or(Ok(true), |_| Err(twice()))
-            }
+            "--window" => self.window = Some(value(flag, args)?),
             "--region" => {
-                let r = numbers::<i32, 4>(flag, &value(flag, args)?, "X,Y,W,H, such as 0,0,1280,720")?;
-                self.region.replace(r).map_or(Ok(true), |_| Err(twice()))
+                self.region = Some(numbers::<i32, 4>(flag, &value(flag, args)?, "X,Y,W,H, such as 0,0,1280,720")?)
             }
-            _ => Ok(false),
+            _ => return Ok(false),
         }
+        Ok(true)
     }
 
     fn finish(self) -> Result<Target, String> {
@@ -208,8 +210,17 @@ impl TargetFlags {
     }
 }
 
+fn once<'a>(flag: &'a str, seen: &mut Vec<&'a str>) -> Result<(), String> {
+    if seen.contains(&flag) {
+        return Err(format!("{flag} is given twice."));
+    }
+    seen.push(flag);
+    Ok(())
+}
+
+/// A following flag is not a value, so `--out --no-copy` names the missing value.
 fn value(flag: &str, args: &mut Args) -> Result<String, String> {
-    args.next().cloned().ok_or_else(|| format!("{flag} needs a value."))
+    args.next_if(|a| !a.starts_with("--")).cloned().ok_or_else(|| format!("{flag} needs a value."))
 }
 
 /// The value after a flag whose value may be left out, such as `--mic [ID]`.
@@ -299,7 +310,7 @@ mod tests {
         want.layout.logo.path = Some("logo.png".into());
         want.layout.logo.corner = Corner::TopLeft;
         want.no_final = true;
-        want.seconds = Some(2.5);
+        want.seconds = Some(Duration::from_secs_f64(2.5));
         let line = "record --region 10,20,1280,720 --monitor 2 --out out --fps 30 --mic mic-1 --system-audio --camera \
                     --camera-shape square --camera-pos 0.5,0.25,0.2 --logo logo.png --logo-corner tl --no-final --seconds 2.5";
         assert_eq!(Ok(Command::Record(want)), run(line));
@@ -328,5 +339,27 @@ mod tests {
         assert!(err("record --monitor 1 --logo-corner middle").contains("middle"));
         assert!(err("record --monitor 1 --out").contains("--out"));
         assert!(err("screenshot --monitor 1 --fps 30").contains("--fps"));
+    }
+
+    #[test]
+    fn seconds_must_be_from_above_0_to_a_day() {
+        for v in ["1e20", "-1", "0", "nan", "abc", "86401"] {
+            assert!(err(&format!("record --monitor 1 --seconds {v}")).contains("--seconds"), "{v}");
+        }
+        let mut want = record(Target::Monitor(1));
+        want.seconds = Some(Duration::from_secs(86_400));
+        assert_eq!(Ok(Command::Record(want)), run("record --monitor 1 --seconds 86400"));
+    }
+
+    #[test]
+    fn a_flag_given_twice_is_refused() {
+        assert!(err("record --monitor 1 --fps 30 --fps 60").contains("--fps is given twice"));
+        assert!(err("screenshot --monitor 1 --no-copy --no-copy").contains("--no-copy is given twice"));
+        assert!(err("screenshot --monitor 1 --monitor 2").contains("--monitor is given twice"));
+    }
+
+    #[test]
+    fn a_flag_is_not_taken_as_a_value() {
+        assert!(err("screenshot --monitor 1 --out --no-copy").contains("--out needs a value"));
     }
 }

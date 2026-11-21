@@ -4,12 +4,18 @@
 //! `--release` makes cargo build and run the release binary. One test at a time keeps the
 //! encoder free for each recording.
 
+// Shared with the engine's tests, which read the fields these tests leave unread.
+#[allow(dead_code)]
+#[path = "../../recorder-win/tests/common/media_info.rs"]
+mod media_info;
+
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::thread::sleep;
+use std::sync::mpsc;
+use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -46,8 +52,20 @@ fn screenrec(args: &[&str]) -> Command {
     c
 }
 
+/// Reads a pipe to its end on its own thread, so a child that writes a lot never blocks.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
 /// Waits for the child, and kills it when it runs past `limit` so a hang fails the test.
 fn finish(mut child: Child, limit: Duration) -> Output {
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
     let end = Instant::now() + limit;
     while child.try_wait().unwrap().is_none() {
         if Instant::now() > end {
@@ -56,7 +74,23 @@ fn finish(mut child: Child, limit: Duration) -> Output {
         }
         sleep(Duration::from_millis(50));
     }
-    child.wait_with_output().unwrap()
+    let status = child.wait().unwrap();
+    Output { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }
+}
+
+/// Checks a failed run: the exit code, a message, and nothing on standard output.
+fn failed(o: &Output, want: i32) {
+    assert_eq!(want, code(o), "{}", stderr(o));
+    assert!(!stderr(o).trim().is_empty());
+    assert!(o.stdout.is_empty(), "stdout: {}", String::from_utf8_lossy(&o.stdout));
+}
+
+/// Checks that screen.mp4 plays for `low` to `high` seconds at a constant frame rate.
+fn screen_plays(v: &Value, low: f64, high: f64) {
+    recorder_win::init_process().unwrap();
+    let info = media_info::read(&Path::new(v["folder"].as_str().unwrap()).join("screen.mp4"));
+    in_range("screen.mp4 seconds", info.duration, low, high);
+    assert!(info.constant_frame_rate, "{info:?}");
 }
 
 fn run(args: &[&str]) -> Output {
@@ -134,8 +168,11 @@ fn record_for_three_seconds() {
     assert!(folder.starts_with(&temp.0));
     in_range("seconds", v["seconds"].as_f64().unwrap(), 2.8, 3.4);
     in_range("system.wav seconds", wav_seconds(&folder.join("system.wav")), 2.8, 3.4);
+    screen_plays(&v, 2.8, 3.4);
     assert_eq!(1280, v["frameWidth"]);
     assert_eq!(720, v["frameHeight"]);
+    assert_eq!(1280, v["screenWidth"]);
+    assert_eq!(720, v["screenHeight"]);
 }
 
 #[test]
@@ -164,33 +201,37 @@ fn pause_resume_and_stop_from_standard_input() {
     assert_eq!(1, session["pauses"].as_array().unwrap().len(), "{session}");
 }
 
-/// Reads standard error until the `recording` line, which a script waits for.
+/// Waits up to 30 seconds for the `recording` line on standard error, which a script waits for.
+/// A thread keeps reading the pipe, so later lines do not block the child.
 fn wait_for_recording(child: &mut Child) {
-    let mut err = child.stderr.take().unwrap();
-    let mut seen = Vec::new();
-    let mut byte = [0u8];
-    while !String::from_utf8_lossy(&seen).lines().any(|l| l == "recording") {
-        assert_eq!(1, err.read(&mut byte).unwrap(), "stderr ended: {}", String::from_utf8_lossy(&seen));
-        seen.push(byte[0]);
+    let err = child.stderr.take().unwrap();
+    let (started, seen) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            if line == "recording" {
+                let _ = started.send(());
+            }
+        }
+    });
+    if seen.recv_timeout(Duration::from_secs(30)).is_err() {
+        let _ = child.kill();
+        panic!("no `recording` line within 30 seconds");
     }
-    // The pipe stays open in a thread, so later lines do not block the child.
-    std::thread::spawn(move || std::io::copy(&mut err, &mut std::io::sink()));
 }
 
 #[test]
 #[ignore]
 fn window_that_does_not_exist_is_a_bad_target() {
     let o = run(&["record", "--window", "no such window title 12345", "--seconds", "1"]);
-    assert_eq!(2, code(&o));
+    failed(&o, 2);
     assert!(stderr(&o).contains("No window matches"), "{}", stderr(&o));
-    assert!(o.stdout.is_empty());
 }
 
 #[test]
 #[ignore]
 fn empty_window_title_lists_the_windows() {
     let o = run(&["record", "--window", "", "--seconds", "1"]);
-    assert_eq!(2, code(&o));
+    failed(&o, 2);
     let titles = json(&run(&["list", "windows"]))["windows"].as_array().unwrap().clone();
     assert!(titles.len() >= 2, "this test needs 2 or more open windows");
     assert!(stderr(&o).contains(titles[0]["title"].as_str().unwrap()), "{}", stderr(&o));
@@ -202,7 +243,7 @@ fn regions_off_the_screen_or_too_small_are_bad_targets() {
     let temp = Temp::new("region");
     for region in ["100000,0,640,360", "0,0,8,8"] {
         let o = run(&["record", "--region", region, "--seconds", "1", "--out", temp.arg()]);
-        assert_eq!(2, code(&o), "{region}: {}", stderr(&o));
+        failed(&o, 2);
     }
 }
 
@@ -235,12 +276,19 @@ fn ctrl_break_stops_cleanly() {
     let v = json(&o);
     assert!(files(&v).iter().any(|f| f == "screen.mp4"), "{v}");
     in_range("seconds", v["seconds"].as_f64().unwrap(), 1.5, 3.0);
+    screen_plays(&v, 1.5, 3.0);
 }
 
 #[test]
 #[ignore]
 fn missing_drive_is_a_failure() {
     let o = run(&["record", "--region", "0,0,640,360", "--seconds", "1", "--out", r"Q:\nope"]);
-    assert_eq!(1, code(&o), "{}", stderr(&o));
-    assert!(!stderr(&o).trim().is_empty());
+    failed(&o, 1);
+}
+
+#[test]
+#[ignore]
+fn bad_arguments_print_nothing_on_standard_output() {
+    failed(&run(&["record", "--monitor", "1", "--seconds", "1e20"]), 2);
+    failed(&run(&["record", "--monitor", "99", "--seconds", "1"]), 2);
 }

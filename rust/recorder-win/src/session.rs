@@ -51,6 +51,8 @@ pub struct RecordingOptions {
     pub system_audio: bool,
     pub layout: Layout,
     pub write_final: bool,
+    /// The caller's own notes, written into session.json and the result at the start.
+    pub extra_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,26 @@ pub struct RecordingResult {
     pub files: Vec<String>,
     pub dropped_frames: i64,
     pub notes: Vec<String>,
+    /// What the session really used, which differs from the preflight after a software fallback.
+    pub frame_rate: i32,
+    pub frame_size: PixelSize,
+    pub screen_file_size: PixelSize,
+}
+
+fn recording_result(folder: &Path, file: &SessionFile, files: Vec<String>, notes: Vec<String>) -> RecordingResult {
+    let screen = file.sources.iter().find(|e| e.file == "screen.mp4");
+    let screen_file_size = screen
+        .and_then(|e| Some(PixelSize { width: e.width?, height: e.height? }))
+        .unwrap_or(file.frame_size);
+    RecordingResult {
+        folder: folder.to_path_buf(),
+        files,
+        dropped_frames: file.dropped_frames,
+        notes,
+        frame_rate: file.frame_rate,
+        frame_size: file.frame_size,
+        screen_file_size,
+    }
 }
 
 /// What the caller's thread and the recording thread share.
@@ -285,11 +307,10 @@ impl RecordingSession {
     pub fn stop(mut self) -> RecordingResult {
         self.end();
         let result = lock(&self.shared.result).clone();
-        result.unwrap_or_else(|| RecordingResult {
-            folder: self.shared.folder.clone(),
-            files: Vec::new(),
-            dropped_frames: 0,
-            notes: vec!["The recording stopped unexpectedly.".into()],
+        result.unwrap_or_else(|| {
+            let s = self.shared.state();
+            let notes = vec!["The recording stopped unexpectedly.".into()];
+            recording_result(&self.shared.folder, &s.file, Vec::new(), notes)
         })
     }
 
@@ -352,7 +373,7 @@ impl Recorder {
         let folder = shared.folder.clone();
         let device = Device::new()?;
         let mut screen = f.open_screen(&o.target, &device)?;
-        let mut notes = Vec::new();
+        let mut notes = o.extra_notes.clone();
         // A camera that will not open (busy, unplugged, no permission) only costs the camera, not the recording.
         let mut cam = None;
         if let Some(id) = &o.webcam_id {
@@ -801,8 +822,7 @@ impl Drop for Recorder {
         let folder = &self.shared.folder;
         let s = self.shared.state();
         let files = s.file.sources.iter().map(|e| e.file.clone()).filter(|f| folder.join(f).exists()).collect();
-        let notes = s.file.notes.clone();
-        let result = RecordingResult { folder: folder.clone(), files, dropped_frames: s.file.dropped_frames, notes };
+        let result = recording_result(folder, &s.file, files, s.file.notes.clone());
         self.shared.save(s, &self.clock);
         *lock(&self.shared.result) = Some(result);
         self.shared.done.notify_all();

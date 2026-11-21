@@ -1,5 +1,7 @@
 mod audio;
 mod compositor;
+mod console;
+mod folders;
 mod error;
 mod factory;
 #[cfg(any(test, feature = "fakes"))]
@@ -15,6 +17,8 @@ mod webcam;
 
 pub use audio::{AudioIn, AudioSource};
 pub use compositor::Compositor;
+pub use console::on_console_stop;
+pub use folders::videos_folder;
 pub use error::{Error, Result};
 pub use gfx::Device;
 pub use screen::{looks_black, Frame, Screen, ScreenSource};
