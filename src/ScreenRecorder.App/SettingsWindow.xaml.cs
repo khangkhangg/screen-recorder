@@ -1,4 +1,5 @@
 using Microsoft.UI.Input;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -34,14 +35,11 @@ public sealed partial class SettingsWindow : Window
             if (e.WindowActivationState == WindowActivationState.Deactivated) ShowHotkeyErrors(apply(settings));
             else releaseHotkeys();
         };
-        Root.Loaded += (_, _) =>
-        {
-            var scale = Root.XamlRoot.RasterizationScale;
-            AppWindow.Resize(new SizeInt32((int)(460 * scale), (int)(620 * scale)));
-        };
+        if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.IsResizable = presenter.IsMaximizable = false;
+        Root.Loaded += (_, _) => FitSize();
         FolderText.Text = settings.OutputFolder;
-        RecordHotkeyBox.Text = settings.RecordHotkey.ToString();
-        ScreenshotHotkeyBox.Text = settings.ScreenshotHotkey.ToString();
+        RecordHotkeyBox.Text = Keys(settings.RecordHotkey);
+        ScreenshotHotkeyBox.Text = Keys(settings.ScreenshotHotkey);
         ShowHotkeyErrors(hotkeysOk);
         CountdownSwitch.IsOn = settings.Countdown;
         FrameRateBox.SelectedIndex = settings.FrameRate == 30 ? 0 : 1;
@@ -52,16 +50,16 @@ public sealed partial class SettingsWindow : Window
     {
         try
         {
-            Fill(WebcamBox, webcamIds, await WebcamSource.ListAsync(), settings.WebcamId);
-            Fill(MicBox, micIds, await AudioSource.ListMicsAsync(), settings.MicId);
+            Fill(WebcamBox, webcamIds, await WebcamSource.ListAsync(), settings.WebcamId, "Default camera");
+            Fill(MicBox, micIds, await AudioSource.ListMicsAsync(), settings.MicId, "Default microphone");
         }
         catch (Exception e) { Warn($"The device list could not be loaded. {e.Message}"); }
         finally { loading = false; }
     }
 
-    static void Fill(ComboBox box, List<string?> ids, IReadOnlyList<(string Id, string Name)> devices, string? current)
+    static void Fill(ComboBox box, List<string?> ids, IReadOnlyList<(string Id, string Name)> devices, string? current, string defaultName)
     {
-        box.Items.Add("Default");
+        box.Items.Add(defaultName);
         foreach (var d in devices)
         {
             box.Items.Add(d.Name);
@@ -81,7 +79,19 @@ public sealed partial class SettingsWindow : Window
     {
         RecordHotkeyError.Visibility = ok.Record ? Visibility.Collapsed : Visibility.Visible;
         ScreenshotHotkeyError.Visibility = ok.Screenshot ? Visibility.Collapsed : Visibility.Visible;
+        if (Root.XamlRoot is not null) FitSize();
     }
+
+    // One column sized to its content, but never taller than the screen; the rest scrolls.
+    void FitSize()
+    {
+        var scale = Root.XamlRoot.RasterizationScale;
+        Root.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var maxHeight = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea.Height - (int)(64 * scale);
+        AppWindow.ResizeClient(new SizeInt32((int)Math.Ceiling(Root.DesiredSize.Width * scale), Math.Min((int)Math.Ceiling(Root.DesiredSize.Height * scale), maxHeight)));
+    }
+
+    static string Keys(Hotkey h) => h.ToString().Replace("+", " + ");
 
     async void Folder_Click(object sender, RoutedEventArgs e)
     {
@@ -116,7 +126,7 @@ public sealed partial class SettingsWindow : Window
         e.Handled = true;
         if (!Hotkey.TryParse(text, out var h)) return;
         var box = (TextBox)sender;
-        box.Text = h.ToString();
+        box.Text = Keys(h);
         Save(box == RecordHotkeyBox ? settings with { RecordHotkey = h } : settings with { ScreenshotHotkey = h });
         releaseHotkeys(); // Save registered them again, and the box still has focus
     }
