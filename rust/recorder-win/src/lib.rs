@@ -1,14 +1,18 @@
+mod audio;
 mod error;
 mod gfx;
 mod screen;
 mod targets;
 mod video;
+mod wav;
 
+pub use audio::{AudioIn, AudioSource};
 pub use error::{Error, Result};
 pub use gfx::Device;
 pub use screen::{looks_black, Frame, Screen, ScreenSource};
 pub use targets::{find_window, monitors, windows, CaptureTarget, MonitorInfo, WindowInfo};
 pub use video::{check_encoders, max_encoder_size, EncoderSupport, VideoOut, VideoWriter};
+pub use wav::WavWriter;
 
 use ::windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL, MF_VERSION};
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
