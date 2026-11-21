@@ -168,8 +168,8 @@ public sealed class VideoFileWriter : IVideoWriter
             if (stream == _videoStream)
             {
                 videoEnd = sample.SampleTime + sample.SampleDuration;
-                Write(stream, sample);
-                Interlocked.Decrement(ref _behind);
+                try { Write(stream, sample); }
+                finally { Interlocked.Decrement(ref _behind); }
             }
             else audio.Enqueue(sample);
             while (audio.TryPeek(out var a) && a.SampleTime < videoEnd) Write(_audioStream, audio.Dequeue());

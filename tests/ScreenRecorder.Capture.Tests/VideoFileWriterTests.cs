@@ -63,6 +63,27 @@ public class VideoFileWriterTests
     }
 
     [Fact]
+    public void Audio_written_ahead_of_video_is_kept()
+    {
+        var path = TempMp4();
+        var device = CanvasDevice.GetSharedDevice();
+        using var target = new CanvasRenderTarget(device, 1280, 720, 96);
+        var writer = new VideoFileWriter(path, new PixelSize(1280, 720), 60, device, Hardware, true);
+        for (int i = 0; i < 200; i++) writer.WriteAudio(new float[480 * 2], i * 480);
+        for (int i = 0; i < 120; i++)
+        {
+            using (var ds = target.CreateDrawingSession()) ds.Clear(Windows.UI.Color.FromArgb(255, 0, (byte)(i * 2), 255));
+            writer.WriteFrame(target, i);
+        }
+        var watch = Stopwatch.StartNew();
+        writer.Dispose();
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"Dispose took {watch.Elapsed}");
+        var info = MediaInfo.Read(path);
+        Assert.InRange(info.Duration.TotalSeconds, 1.95, 2.05);
+        Assert.InRange(info.AudioDuration.TotalSeconds, 1.95, 2.05);
+    }
+
+    [Fact]
     public void Probe_reports_a_value() => Assert.True(Enum.IsDefined(EncoderProbe.Check(3)));
 
     [Fact]

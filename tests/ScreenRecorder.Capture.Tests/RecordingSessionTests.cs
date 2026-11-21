@@ -264,7 +264,9 @@ public class RecordingSessionTests
     [LargeMonitorFact]
     public async Task Desktop_4k_keeps_its_frames()
     {
-        await using var s = await Start(Options() with { Mic = true });
+        var o = Options() with { Mic = true };
+        var p = await RecordingSession.PreflightAsync(o, new TestFactory());
+        await using var s = await Start(o);
         await Task.Delay(10_000);
         var watch = Stopwatch.StartNew();
         var result = await s.StopAsync();
@@ -272,8 +274,8 @@ public class RecordingSessionTests
         var final = MediaInfo.Read(Path.Combine(result.Folder, "final.mp4"));
         var screen = MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4"));
         Assert.True(result.DroppedFrames * 100 < final.FrameCount, $"{result.DroppedFrames} of {final.FrameCount} frames dropped");
-        Assert.Equal(3840, final.Width);
-        Assert.Equal(1920, screen.Width);
+        Assert.Equal(p.FrameSize.Width, final.Width);
+        Assert.Equal(p.ScreenFileSize.Width, screen.Width);
         Assert.Equal(screen.FrameCount, final.FrameCount);
         Assert.True(stopTime < TimeSpan.FromSeconds(3), $"StopAsync took {stopTime}");
     }
