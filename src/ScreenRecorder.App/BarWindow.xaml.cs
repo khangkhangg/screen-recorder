@@ -69,13 +69,17 @@ public sealed partial class BarWindow : Window
         cameraOverlay = new CameraOverlayWindow();
         logoOverlay = new LogoOverlayWindow();
         cameraOverlay.Changed += c => Save(settings with { Layout = settings.Layout with { Camera = c } });
+        // the overlays come back on release, placed for the new region
+        frame.DragStarted += () => { cameraOverlay.Hide(); logoOverlay.Hide(); };
+        frame.DragCancelled += UpdateOverlays;
+        frame.Changed += r => SetTarget(r, "Region");
         follow = DispatcherQueue.CreateTimer();
         follow.Interval = TimeSpan.FromMilliseconds(100);
         follow.Tick += (_, _) => FollowWindow();
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); outline.Close(); };
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += (_, e) =>
@@ -93,7 +97,7 @@ public sealed partial class BarWindow : Window
 
     readonly CameraOverlayWindow cameraOverlay;
     readonly LogoOverlayWindow logoOverlay;
-    readonly RegionOutlineWindow outline = new();
+    readonly RegionFrameWindow frame = new();
     readonly DispatcherQueueTimer follow, confirm;
     string sourceLabel = "Desktop";
     string? lastShot;
@@ -112,13 +116,13 @@ public sealed partial class BarWindow : Window
         ShowOutline();
     }
 
-    // Marks the chosen region: accent with its size while idle, red without it from the countdown on.
+    // Frames the chosen region: accent with its size while idle, red with the countdown number or the bar's time from then on.
     void ShowOutline()
     {
         if (CurrentTarget is RegionTarget r && AreaOf(r) is { } a)
-            outline.Show(r.Hmonitor, new((int)a.X, (int)a.Y, (int)a.Width, (int)a.Height), state != RecorderState.Idle,
-                state == RecorderState.Idle ? $"{r.Width} x {r.Height}" : null);
-        else outline.Hide();
+            frame.Show(r.Hmonitor, new((int)a.X, (int)a.Y, (int)a.Width, (int)a.Height), state == RecorderState.Idle,
+                state == RecorderState.Countdown ? CountdownText.Text : TimerText.Text);
+        else frame.Hide();
     }
 
     void FollowWindow()
@@ -191,7 +195,7 @@ public sealed partial class BarWindow : Window
         // the overlays sit on top, so they would take the drag meant for the region picker
         cameraOverlay.Hide();
         logoOverlay.Hide();
-        outline.Hide();
+        frame.Hide();
         try { if (await RegionSelectWindow.PickAsync() is { } picked) SetTarget(picked, "Region"); }
         finally { AppWindow.Show(); UpdateOverlays(); }
     }

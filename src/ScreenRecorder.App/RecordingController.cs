@@ -99,6 +99,7 @@ public sealed partial class BarWindow
         for (var n = 3; n > 0 && state == RecorderState.Countdown; n--)
         {
             CountdownText.Text = n.ToString();
+            ShowOutline();
             await Task.Delay(1000);
             if (run != countdownRun) return; // cancelled and started again during this second
         }
@@ -162,5 +163,6 @@ public sealed partial class BarWindow
         if (session is null) return;
         var t = session.Elapsed;
         TimerText.Text = t.ToString(t.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss");
+        ShowOutline();
     }
 }
