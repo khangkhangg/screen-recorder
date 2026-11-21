@@ -110,6 +110,9 @@ public sealed class RegionFrameWindow : Window
         if (layout is not null) Draw(region);
     }
 
+    // Keeps the grab areas above the action bar, so a handle under it still takes the drag.
+    public void Raise() => NativeMethods.BringToTop(inputHwnd);
+
     public void Hide()
     {
         Cancel();

@@ -24,13 +24,7 @@ public static class Screenshot
     internal static async Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, Func<string, Task>? copy)
     {
         using var source = ScreenSource.Create(target, CanvasDevice.GetSharedDevice());
-        var deadline = DateTime.UtcNow.AddSeconds(2);
-        CanvasBitmap? frame;
-        while (!source.TryGetLatestFrame(out frame))
-        {
-            if (DateTime.UtcNow > deadline) throw new CaptureUnavailableException("No frame arrived within 2 seconds.");
-            await Task.Delay(20);
-        }
+        var frame = await FirstFrameAsync(source);
 
         Directory.CreateDirectory(outputRoot);
         var path = UniquePath(outputRoot, DateTime.Now);
@@ -47,6 +41,39 @@ public static class Screenshot
             }
         catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
         return new(path, copied);
+    }
+
+    static async Task<CanvasBitmap> FirstFrameAsync(ScreenSource source)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        CanvasBitmap? frame;
+        while (!source.TryGetLatestFrame(out frame))
+        {
+            if (DateTime.UtcNow > deadline) throw new CaptureUnavailableException("No frame arrived within 2 seconds.");
+            await Task.Delay(20);
+        }
+        return frame;
+    }
+
+    // Puts a PNG of the target on the clipboard and writes no file.
+    public static Task CopyAsync(CaptureTarget target) => CopyAsync(target, png =>
+    {
+        var data = new DataPackage();
+        data.SetBitmap(RandomAccessStreamReference.CreateFromStream(png));
+        Clipboard.SetContent(data);
+        Clipboard.Flush();
+        return Task.CompletedTask;
+    });
+
+    // The clipboard is a seam so a test can read the PNG.
+    internal static async Task CopyAsync(CaptureTarget target, Func<IRandomAccessStream, Task> copy)
+    {
+        using var source = ScreenSource.Create(target, CanvasDevice.GetSharedDevice());
+        var frame = await FirstFrameAsync(source);
+        using var png = new InMemoryRandomAccessStream();
+        await frame.SaveAsync(png, CanvasBitmapFileFormat.Png);
+        png.Seek(0);
+        await copy(png);
     }
 
     // Writes a new PNG; the source file is only read.

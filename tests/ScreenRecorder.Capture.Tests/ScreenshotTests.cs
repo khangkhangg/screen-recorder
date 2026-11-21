@@ -41,6 +41,14 @@ public class ScreenshotTests
     }
 
     [Fact]
+    public async Task Copy_gives_a_png_of_the_region_size()
+    {
+        BitmapDecoder? png = null;
+        await Screenshot.CopyAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), async s => png = await BitmapDecoder.CreateAsync(s));
+        Assert.Equal((320u, 200u), (png!.PixelWidth, png.PixelHeight));
+    }
+
+    [Fact]
     public async Task Missing_folder_is_created()
     {
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());

@@ -65,17 +65,25 @@ public sealed partial class BarWindow : Window
         card = new ScreenshotCard();
         logoOverlay = new LogoOverlayWindow();
         cameraOverlay.Changed += c => Save(settings with { Layout = settings.Layout with { Camera = c } });
+        actionBar = new ActionBarWindow();
+        actionBar.Copy += CopyRegion;
+        actionBar.Save += TakeScreenshot;
+        actionBar.Share += ShareRegion;
+        actionBar.Record += ToggleRecord;
+        actionBar.Cancel += CancelRegion;
+        share = new(hwnd);
+        DeleteOldShares();
         // the overlays come back on release, placed for the new region
-        frame.DragStarted += () => { cameraOverlay.Hide(); logoOverlay.Hide(); };
-        frame.DragCancelled += UpdateOverlays;
-        frame.Changed += r => { SetTarget(r, "Region"); Remember(r); };
+        frame.DragStarted += () => { dragging = true; cameraOverlay.Hide(); logoOverlay.Hide(); actionBar.Hide(); };
+        frame.DragCancelled += () => { dragging = false; UpdateOverlays(); };
+        frame.Changed += r => { dragging = false; SetTarget(r, "Region"); Remember(r); };
         follow = DispatcherQueue.CreateTimer();
         follow.Interval = TimeSpan.FromMilliseconds(100);
         follow.Tick += (_, _) => FollowWindow();
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); card.Close(); };
+        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); card.Close(); actionBar.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += (_, e) =>
@@ -99,6 +107,9 @@ public sealed partial class BarWindow : Window
     readonly DispatcherQueueTimer follow, confirm;
     string sourceLabel = "Desktop";
     readonly ScreenshotCard card;
+    readonly ActionBarWindow actionBar;
+    readonly SharePanel share;
+    bool dragging, picking;
     RectF? overlayArea;
 
     static RectF? AreaOf(CaptureTarget target) => TargetPicker.AreaOnScreen(target, NativeMethods.MonitorRect, NativeMethods.WindowRect);
@@ -118,9 +129,21 @@ public sealed partial class BarWindow : Window
     void ShowOutline()
     {
         if (CurrentTarget is RegionTarget r && AreaOf(r) is { } a)
-            frame.Show(r.Hmonitor, new((int)a.X, (int)a.Y, (int)a.Width, (int)a.Height), state == RecorderState.Idle,
-                state == RecorderState.Countdown ? CountdownText.Text : TimerText.Text);
-        else frame.Hide();
+        {
+            var rect = new RectInt32((int)a.X, (int)a.Y, (int)a.Width, (int)a.Height);
+            frame.Show(r.Hmonitor, rect, state == RecorderState.Idle, state == RecorderState.Countdown ? CountdownText.Text : TimerText.Text);
+            if (!ActionBar.Shows(CurrentTarget, state, dragging, picking)) actionBar.Hide();
+            else
+            {
+                actionBar.Show(r.Hmonitor, rect);
+                frame.Raise();
+            }
+        }
+        else
+        {
+            frame.Hide();
+            actionBar.Hide();
+        }
     }
 
     void FollowWindow()
@@ -196,8 +219,10 @@ public sealed partial class BarWindow : Window
         cameraOverlay.Hide();
         logoOverlay.Hide();
         frame.Hide();
+        picking = true;
+        actionBar.Hide();
         try { if (await RegionSelectWindow.PickAsync() is { } picked) { SetTarget(picked, "Region"); Remember(picked); } }
-        finally { AppWindow.Show(); UpdateOverlays(); }
+        finally { picking = false; AppWindow.Show(); UpdateOverlays(); }
     }
 
     public static int SegmentOf(CaptureTarget target) => target switch { WindowTarget => 1, RegionTarget => 2, _ => 0 };
@@ -357,14 +382,57 @@ public sealed partial class BarWindow : Window
 
     void Screenshot_Click(object sender, RoutedEventArgs e) => TakeScreenshot();
 
-    async void TakeScreenshot()
+    async void TakeScreenshot() =>
+        await Capture(async () => ShowConfirmation(await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder)), settings.OutputFolder);
+
+    // Every screenshot path shows these messages. The action bar waits, so a double click cannot take 2 pictures.
+    async Task<bool> Capture(Func<Task> take, string folder)
     {
-        try { ShowConfirmation(await Screenshot.CaptureAsync(CurrentTarget, settings.OutputFolder)); }
+        actionBar.Busy = true;
+        try
+        {
+            await take();
+            return true;
+        }
         catch (CaptureUnavailableException ex) { NativeMethods.ShowWarning(hwnd, ex.Message, "Screenshot"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            NativeMethods.ShowWarning(hwnd, $"The screenshot could not be saved to {settings.OutputFolder}.", "Screenshot");
+            NativeMethods.ShowWarning(hwnd, $"The screenshot could not be saved to {folder}.", "Screenshot");
         }
+        finally { actionBar.Busy = false; }
+        return false;
+    }
+
+    async void CopyRegion() => await Capture(async () => { await Screenshot.CopyAsync(CurrentTarget); actionBar.ShowCopied(); }, settings.OutputFolder);
+
+    async void ShareRegion()
+    {
+        string path = "";
+        if (!await Capture(async () => path = (await Screenshot.CaptureAsync(CurrentTarget, ActionBar.ShareFolder, copyToClipboard: false)).Path, ActionBar.ShareFolder)) return;
+        try { await share.ShowAsync(path); }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            NativeMethods.ShowWarning(hwnd, "Sharing is not available on this PC.", "Share");
+        }
+    }
+
+    void CancelRegion()
+    {
+        var (s, desktop) = ActionBar.Cancel(settings);
+        Save(s);
+        SetTarget(desktop, "Desktop");
+    }
+
+    // Old shared pictures stay for a day, so a share target can still read them.
+    static void DeleteOldShares()
+    {
+        try
+        {
+            var files = new DirectoryInfo(ActionBar.ShareFolder).EnumerateFiles().Select(f => (f.FullName, f.LastWriteTimeUtc));
+            foreach (var path in ActionBar.Stale(files, DateTime.UtcNow).ToList()) File.Delete(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     // The one place that maps the recorder state to what the bar shows.

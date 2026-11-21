@@ -22,8 +22,7 @@ public sealed partial class ScreenshotCard : Window
     readonly nint hwnd;
     readonly DispatcherQueueTimer life, copiedTimer, shareTimer;
     readonly List<CropWindow> crops = [];
-    DataTransferManager? share;
-    StorageFile? shareFile;
+    readonly SharePanel share;
     string path = "";
     bool copied, hover, active, sharing;
     long sharedAt;
@@ -54,6 +53,8 @@ public sealed partial class ScreenshotCard : Window
         shareTimer.Interval = TimeSpan.FromSeconds(60);
         shareTimer.IsRepeating = false;
         shareTimer.Tick += (_, _) => { sharing = false; Countdown(); };
+        share = new(hwnd);
+        share.Closed += () => DispatcherQueue.TryEnqueue(() => { sharing = false; Countdown(); }); // so the countdown can go on
         // Showing the card can raise Activated without giving it focus, so ask Windows which window has it.
         Activated += (_, e) =>
         {
@@ -181,17 +182,11 @@ public sealed partial class ScreenshotCard : Window
     {
         try
         {
-            shareFile = await StorageFile.GetFileFromPathAsync(path);
-            if (share is null)
-            {
-                share = DataTransferManagerInterop.GetForWindow(hwnd);
-                share.DataRequested += Share_DataRequested;
-            }
             sharing = true;
             sharedAt = Environment.TickCount64;
             shareTimer.Start(); // a panel can close without any event the card sees
             Countdown();
-            DataTransferManagerInterop.ShowShareUIForWindow(hwnd);
+            await share.ShowAsync(path);
         }
         catch (Exception ex)
         {
@@ -200,15 +195,6 @@ public sealed partial class ScreenshotCard : Window
             Countdown();
             NativeMethods.ShowWarning(hwnd, "Sharing is not available on this PC.", "Share");
         }
-    }
-
-    void Share_DataRequested(DataTransferManager sender, DataRequestedEventArgs e)
-    {
-        if (shareFile is null) return;
-        e.Request.Data.Properties.Title = shareFile.Name;
-        e.Request.Data.SetStorageItems([shareFile]);
-        // The package is released when the share panel closes, so the countdown can go on.
-        e.Request.Data.Destroyed += (_, _) => DispatcherQueue.TryEnqueue(() => { sharing = false; Countdown(); });
     }
 
     async void Crop_Click(object sender, RoutedEventArgs e)
