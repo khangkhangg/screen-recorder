@@ -1,4 +1,5 @@
 using Microsoft.UI.Input;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -25,6 +26,8 @@ public sealed partial class SettingsWindow : Window
     public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply, Action releaseHotkeys)
     {
         InitializeComponent();
+        if (!NativeMethods.ExcludeFromCapture(WinRT.Interop.WindowNative.GetWindowHandle(this)))
+            System.Diagnostics.Debug.WriteLine("Settings window could not be excluded from capture");
         settings = current;
         this.apply = apply;
         this.releaseHotkeys = releaseHotkeys;
@@ -42,7 +45,8 @@ public sealed partial class SettingsWindow : Window
         ScreenshotHotkeyBox.Text = Keys(settings.ScreenshotHotkey);
         ShowHotkeyErrors(hotkeysOk);
         CountdownSwitch.IsOn = settings.Countdown;
-        FrameRateBox.SelectedIndex = settings.FrameRate == 30 ? 0 : 1;
+        ShowRate();
+        Root.ActualThemeChanged += (_, _) => ShowRate();
         LoadDevices();
     }
 
@@ -135,7 +139,21 @@ public sealed partial class SettingsWindow : Window
 
     void Countdown_Toggled(object sender, RoutedEventArgs e) => Save(settings with { Countdown = CountdownSwitch.IsOn });
 
-    void FrameRate_Changed(object sender, SelectionChangedEventArgs e) => Save(settings with { FrameRate = FrameRateBox.SelectedIndex == 0 ? 30 : 60 });
+    void FrameRate_Click(object sender, RoutedEventArgs e)
+    {
+        Save(settings with { FrameRate = (string)((Button)sender).Tag == "30" ? 30 : 60 });
+        ShowRate();
+    }
+
+    void ShowRate()
+    {
+        foreach (var (b, fps) in new[] { (Rate30, 30), (Rate60, 60) })
+        {
+            var on = settings.FrameRate == fps;
+            SegmentLook.Apply(b, on, SegmentProbe);
+            AutomationProperties.SetName(b, $"{fps} frames per second" + (on ? ", selected" : ""));
+        }
+    }
 
     void Webcam_Changed(object sender, SelectionChangedEventArgs e) => Save(settings with { WebcamId = webcamIds[Math.Max(0, WebcamBox.SelectedIndex)] });
 

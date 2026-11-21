@@ -86,12 +86,14 @@ public sealed partial class BarWindow : Window
             Quit();
         };
         RegisterHotkeys();
+        Root.ActualThemeChanged += (_, _) => ShowSource(sourceLabel);
         Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
     }
 
     readonly CameraOverlayWindow cameraOverlay;
     readonly LogoOverlayWindow logoOverlay;
     readonly DispatcherQueueTimer follow, confirm;
+    string sourceLabel = "Desktop";
     string? lastShot;
     RectF? overlayArea;
 
@@ -186,14 +188,14 @@ public sealed partial class BarWindow : Window
     // The selected segment looks raised, and its tooltip names the exact monitor or window.
     void ShowSource(string label)
     {
+        sourceLabel = label;
         Button[] segments = [DesktopSegment, WindowSegment, RegionSegment];
         string[] names = ["Desktop", "Window", "Region"];
         var selected = SegmentOf(CurrentTarget);
         for (var i = 0; i < segments.Length; i++)
         {
             var on = i == selected;
-            segments[i].Background = (Brush)Application.Current.Resources[on ? "ControlFillColorDefaultBrush" : "SubtleFillColorTransparentBrush"];
-            segments[i].BorderBrush = (Brush)Application.Current.Resources[on ? "ControlElevationBorderBrush" : "SubtleFillColorTransparentBrush"];
+            SegmentLook.Apply(segments[i], on, SegmentProbe);
             ToolTipService.SetToolTip(segments[i], on ? label : names[i]);
             AutomationProperties.SetName(segments[i], on ? names[i] + ", selected" : names[i]);
         }

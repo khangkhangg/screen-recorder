@@ -27,6 +27,20 @@ public class ScreenshotTests
     }
 
     [Fact]
+    public async Task Failed_clipboard_copy_still_saves_the_file()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        try
+        {
+            var shot = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), temp,
+                _ => throw new InvalidOperationException("clipboard busy"));
+            Assert.False(shot.Copied);
+            Assert.True(File.Exists(shot.Path));
+        }
+        finally { Directory.Delete(temp, true); }
+    }
+
+    [Fact]
     public async Task Missing_folder_is_created()
     {
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());

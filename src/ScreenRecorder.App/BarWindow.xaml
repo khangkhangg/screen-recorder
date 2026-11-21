@@ -30,7 +30,9 @@
             </Style>
         </Border.Resources>
         <Grid>
-            <StackPanel x:Name="Bar" Orientation="Horizontal" Spacing="4">
+            <Border x:Name="SegmentProbe" Visibility="Collapsed" Background="{ThemeResource ControlFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource ControlElevationBorderBrush}" />
+        <StackPanel x:Name="Bar" Orientation="Horizontal" Spacing="4">
                 <Border Width="20" Height="40" Background="Transparent" ToolTipService.ToolTip="Drag to move" PointerPressed="Grip_PointerPressed">
                     <FontIcon Glyph="&#xE784;" FontSize="16" />
                 </Border>

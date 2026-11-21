@@ -9,7 +9,19 @@ public record ScreenshotResult(string Path, bool Copied);
 
 public static class Screenshot
 {
-    public static async Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, bool copyToClipboard = true)
+    public static Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, bool copyToClipboard = true) =>
+        CaptureAsync(target, outputRoot, copyToClipboard ? CopyToClipboard : null);
+
+    static async Task CopyToClipboard(string path)
+    {
+        var data = new DataPackage();
+        data.SetBitmap(RandomAccessStreamReference.CreateFromFile(await StorageFile.GetFileFromPathAsync(path)));
+        Clipboard.SetContent(data);
+        Clipboard.Flush();
+    }
+
+    // The copy function is a seam so a test can make the copy fail.
+    internal static async Task<ScreenshotResult> CaptureAsync(CaptureTarget target, string outputRoot, Func<string, Task>? copy)
     {
         using var source = ScreenSource.Create(target, CanvasDevice.GetSharedDevice());
         var deadline = DateTime.UtcNow.AddSeconds(2);
@@ -27,18 +39,13 @@ public static class Screenshot
             await frame!.SaveAsync(stream, CanvasBitmapFileFormat.Png);
 
         var copied = false;
-        if (copyToClipboard)
-        {
+        if (copy is not null)
             try
             {
-                var data = new DataPackage();
-                data.SetBitmap(RandomAccessStreamReference.CreateFromFile(await StorageFile.GetFileFromPathAsync(path)));
-                Clipboard.SetContent(data);
-                Clipboard.Flush();
+                await copy(path);
                 copied = true;
             }
-            catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
-        }
+        catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); } // the saved file is the result, so a clipboard failure must not lose it
         return new(path, copied);
     }
 
