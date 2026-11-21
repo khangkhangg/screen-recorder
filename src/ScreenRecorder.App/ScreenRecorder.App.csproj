@@ -9,6 +9,8 @@
     <UseWinUI>true</UseWinUI>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <WindowsPackageType>None</WindowsPackageType>
+    <!-- Without it, publish leaves out the app's .pri and .xbf files and the window fails to load. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Main lives in App.xaml.cs for the single-instance check. -->
