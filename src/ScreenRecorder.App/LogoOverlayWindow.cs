@@ -11,6 +11,7 @@ public sealed class LogoOverlayWindow : Window
 {
     // shortcut: transparent logo pixels show the canvas background, replace when the overlay can be per-pixel transparent
     readonly CanvasControl canvas = new() { CustomDevice = CanvasDevice.GetSharedDevice() };
+    readonly nint hwnd;
     RectF area;
     LogoItem logo = Layout.Default.Logo;
     string? loadedPath;
@@ -20,7 +21,7 @@ public sealed class LogoOverlayWindow : Window
     public LogoOverlayWindow()
     {
         Content = canvas;
-        NativeMethods.MakeOverlay(this, "Logo overlay");
+        hwnd = NativeMethods.MakeOverlay(this, "Logo overlay");
         canvas.Draw += (s, e) => { if (bitmap is not null) e.DrawingSession.DrawImage(bitmap, new Windows.Foundation.Rect(0, 0, s.ActualWidth, s.ActualHeight)); };
     }
 
@@ -67,7 +68,8 @@ public sealed class LogoOverlayWindow : Window
     {
         var size = new PixelSize((int)bitmap!.SizeInPixels.Width, (int)bitmap.SizeInPixels.Height);
         var r = OverlayMath.ToScreen(Layout.LogoRect(logo, Frame, size), area, Frame);
-        AppWindow.MoveAndResize(new RectInt32((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height)));
+        var rect = new RectInt32((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height));
+        NativeMethods.PlaceOverlay(AppWindow, hwnd, rect, [(rect, 0)]);
         canvas.Invalidate();
     }
 }

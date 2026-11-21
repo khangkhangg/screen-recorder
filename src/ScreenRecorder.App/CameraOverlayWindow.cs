@@ -89,15 +89,10 @@ public sealed class CameraOverlayWindow : Window
     {
         var r = OnScreen;
         int side = (int)Math.Round(r.Width);
-        AppWindow.MoveAndResize(new RectInt32((int)Math.Round(r.X), (int)Math.Round(r.Y), side, side));
+        var rect = new RectInt32((int)Math.Round(r.X), (int)Math.Round(r.Y), side, side);
         // corner diameter is 36% of the side, so the radius matches the compositor's 18%
-        int corner = (int)(side * 0.36f);
-        NativeMethods.SetWindowRgn(hwnd, camera.Shape switch
-        {
-            CameraShape.Circle => NativeMethods.CreateEllipticRgn(0, 0, side + 1, side + 1),
-            CameraShape.RoundedSquare => NativeMethods.CreateRoundRectRgn(0, 0, side + 1, side + 1, corner, corner),
-            _ => NativeMethods.CreateRectRgn(0, 0, side, side),
-        }, true);
+        int round = camera.Shape switch { CameraShape.Circle => side + 1, CameraShape.RoundedSquare => (int)(side * 0.36f), _ => 0 };
+        NativeMethods.PlaceOverlay(AppWindow, hwnd, rect, [(rect, round)]);
         canvas.Invalidate();
     }
 

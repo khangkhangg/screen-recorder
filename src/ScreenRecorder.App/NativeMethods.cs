@@ -125,17 +125,37 @@ static class NativeMethods
     [DllImport("shcore.dll")] static extern int GetDpiForMonitor(nint hmonitor, int type, out uint x, out uint y);
 
     // Shapes a window to these rectangles in window pixels, so clicks and pixels outside them are not the window's.
-    public static void SetRegion(nint hwnd, IEnumerable<RectInt32> rects)
+    public static void SetRegion(nint hwnd, IEnumerable<RectInt32> rects) => SetRoundRegion(hwnd, rects.Select(r => (r, 0)));
+
+    // Round is the diameter of the rounded corners, 0 for square ones.
+    public static void SetRoundRegion(nint hwnd, IEnumerable<(RectInt32 Rect, int Round)> parts)
     {
         var region = CreateRectRgn(0, 0, 0, 0);
-        foreach (var r in rects)
+        foreach (var (r, round) in parts)
         {
-            var part = CreateRectRgn(r.X, r.Y, r.X + r.Width, r.Y + r.Height);
+            var part = round > 0
+                ? CreateRoundRectRgn(r.X, r.Y, r.X + r.Width + 1, r.Y + r.Height + 1, round, round)
+                : CreateRectRgn(r.X, r.Y, r.X + r.Width, r.Y + r.Height);
             CombineRgn(region, region, part, 2); // RGN_OR
             DeleteObject(part);
         }
         SetWindowRgn(hwnd, region, true); // the window owns the region now
     }
+
+    // A borderless WinUI window keeps a frame about 3 pixels wide around the client area where XAML draws. This puts
+    // the client area on the given screen pixels and shapes the window to the parts, which are in screen pixels too.
+    public static void PlaceOverlay(AppWindow window, nint hwnd, RectInt32 client, IEnumerable<(RectInt32 Rect, int Round)> parts)
+    {
+        int Frame() => (window.Size.Width - window.ClientSize.Width) / 2;
+        void Move(int f) => window.MoveAndResize(new RectInt32(client.X - f, client.Y - f, client.Width + 2 * f, client.Height + 2 * f));
+        var f = Frame();
+        Move(f);
+        // a window that was never placed can report no frame yet
+        if (Frame() != f) Move(f = Frame());
+        SetRoundRegion(hwnd, parts.Select(p => (new RectInt32(p.Rect.X - client.X + f, p.Rect.Y - client.Y + f, p.Rect.Width, p.Rect.Height), p.Round)));
+    }
+
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
 
     public static double MonitorScale(nint hmonitor) => GetDpiForMonitor(hmonitor, 0, out var dpi, out _) == 0 ? dpi / 96.0 : 1;
 

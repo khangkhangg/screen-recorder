@@ -42,9 +42,14 @@ public sealed partial class RegionSelectWindow : Window
     public static async Task<RegionTarget?> PickAsync()
     {
         var done = new TaskCompletionSource<RegionTarget?>();
-        var windows = NativeMethods.Monitors().Select(m => new RegionSelectWindow(m.Hmonitor, m.Bounds, done)).ToList();
-        windows.ForEach(w => w.Activate());
-        try { return await done.Task; }
+        var windows = new List<RegionSelectWindow>();
+        try
+        {
+            // one by one inside the try, so a later monitor that fails still closes the earlier ones
+            foreach (var m in NativeMethods.Monitors()) windows.Add(new RegionSelectWindow(m.Hmonitor, m.Bounds, done));
+            windows.ForEach(w => w.Activate());
+            return await done.Task;
+        }
         finally { windows.Where(w => !w.closed).ToList().ForEach(w => w.Close()); }
     }
 
@@ -63,7 +68,11 @@ public sealed partial class RegionSelectWindow : Window
 
     void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (start is not null) Draw(e.GetCurrentPoint(Root).Position);
+        if (start is null) return;
+        var p = e.GetCurrentPoint(Root);
+        // while the left button is held, a right press arrives as a move
+        if (p.Properties.IsRightButtonPressed) done.TrySetResult(null);
+        else Draw(p.Position);
     }
 
     void Draw(Point b)

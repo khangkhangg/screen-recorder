@@ -65,11 +65,7 @@ public sealed class RegionOutlineWindow : Window
         int x = parts.Min(p => p.X), y = parts.Min(p => p.Y);
         int w = parts.Max(p => p.X + p.Width) - x, h = parts.Max(p => p.Y + p.Height) - y;
         if (labelRect is { } at) label.Margin = new Thickness((at.X - x) / scale, (at.Y - y) / scale, 0, 0);
-        AppWindow.MoveAndResize(new RectInt32(x, y, w, h));
-        // the borderless presenter keeps a thin frame, so the window grows by it to put the client area, where XAML draws, on the parts
-        int f = (AppWindow.Size.Width - AppWindow.ClientSize.Width) / 2;
-        if (f > 0) AppWindow.MoveAndResize(new RectInt32(x - f, y - f, w + 2 * f, h + 2 * f));
-        NativeMethods.SetRegion(hwnd, parts.Select(p => new RectInt32(p.X - x + f, p.Y - y + f, p.Width, p.Height)));
+        NativeMethods.PlaceOverlay(AppWindow, hwnd, new RectInt32(x, y, w, h), parts.Select(p => (p, 0)));
         AppWindow.Show(false);
         // once a test run found it had lost its topmost style, so it is set again each time
         NativeMethods.BringToTop(hwnd);
