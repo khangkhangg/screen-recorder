@@ -1,5 +1,14 @@
 use crate::frame_math::{PixelSize, RectF};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+// .NET writes whole-number floats without a decimal point, so both apps write the same text.
+fn whole_number<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+    if v.fract() == 0.0 && v.abs() < 1e7 {
+        s.serialize_i64(*v as i64)
+    } else {
+        s.serialize_f32(*v)
+    }
+}
 
 const MARGIN: f32 = 0.02;
 
@@ -21,8 +30,11 @@ pub enum Corner {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraItem {
     pub visible: bool,
+    #[serde(serialize_with = "whole_number")]
     pub x: f32,
+    #[serde(serialize_with = "whole_number")]
     pub y: f32,
+    #[serde(serialize_with = "whole_number")]
     pub size: f32,
     pub shape: CameraShape,
 }
@@ -31,6 +43,7 @@ pub struct CameraItem {
 pub struct LogoItem {
     pub visible: bool,
     pub corner: Corner,
+    #[serde(serialize_with = "whole_number")]
     pub size: f32,
     pub path: Option<String>,
 }
@@ -97,6 +110,16 @@ mod tests {
         assert!((e.y - a.y).abs() < 0.01, "y {} vs {}", e.y, a.y);
         assert!((e.width - a.width).abs() < 0.01, "width {} vs {}", e.width, a.width);
         assert!((e.height - a.height).abs() < 0.01, "height {} vs {}", e.height, a.height);
+    }
+
+    #[test]
+    fn whole_numbers_are_written_like_dotnet() {
+        let json = serde_json::to_string(&cam(0.0, 1.0, 0.25, CameraShape::Circle)).unwrap();
+        assert!(json.contains(r#""x":0,"y":1,"size":0.25"#), "{json}");
+        for (size, text) in [(0.73, "0.73"), (0.25, "0.25"), (0.08, "0.08")] {
+            let json = serde_json::to_string(&logo(size)).unwrap();
+            assert!(json.contains(&format!(r#""size":{text}"#)), "{json}");
+        }
     }
 
     #[test]

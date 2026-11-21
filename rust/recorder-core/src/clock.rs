@@ -87,7 +87,7 @@ impl RecordingClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
     use std::sync::Arc;
 
     // Fake time in 100-nanosecond ticks.
@@ -117,7 +117,8 @@ mod tests {
         c.pause();
         advance(&t, 3.0);
         c.resume();
-        assert_eq!(Duration::from_secs(2), c.media_time());
+        advance(&t, 1.0);
+        assert_eq!(Duration::from_secs(3), c.media_time());
         assert_eq!(vec![PauseEntry { at_seconds: 2.0, duration_seconds: 3.0 }], c.pauses());
     }
 
@@ -190,18 +191,26 @@ mod tests {
         let c = Arc::new(RecordingClock::new(1000, Box::new(move || t0.elapsed())));
         c.start();
         let c2 = c.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let toggles = Arc::new(AtomicU64::new(0));
+        let (done2, toggles2) = (done.clone(), toggles.clone());
         let worker = std::thread::spawn(move || {
-            for _ in 0..1000 {
+            while !done2.load(SeqCst) {
                 c2.pause();
                 c2.resume();
+                toggles2.fetch_add(1, SeqCst);
             }
         });
         let mut last = 0;
-        while !worker.is_finished() {
+        let mut reads = 0;
+        // Keep reading until the writer has really run, so the two threads overlap.
+        while reads < 1_000 || toggles.load(SeqCst) == 0 {
             let n = c.frames_due();
             assert!(n >= last, "{n} < {last}");
             last = n;
+            reads += 1;
         }
+        done.store(true, SeqCst);
         worker.join().unwrap();
         assert!(c.frames_due() >= last);
     }
