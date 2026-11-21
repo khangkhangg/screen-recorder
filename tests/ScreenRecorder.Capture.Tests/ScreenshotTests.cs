@@ -68,6 +68,21 @@ public class ScreenshotTests
     }
 
     [Fact]
+    public async Task Failed_crop_leaves_no_file()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        try
+        {
+            var shot = await Screenshot.CaptureAsync(new RegionTarget(CaptureTarget.PrimaryMonitor(), 0, 0, 320, 200), temp, copyToClipboard: false);
+            var target = Path.Combine(temp, "cropped.png");
+            await Assert.ThrowsAsync<IOException>(() => Screenshot.CropAsync(shot.Path, target, 10, 20, 64, 38,
+                (_, _) => Task.FromException(new IOException("disk full"))));
+            Assert.False(File.Exists(target));
+        }
+        finally { Directory.Delete(temp, true); }
+    }
+
+    [Fact]
     public void Same_second_names_get_a_counter()
     {
         var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());

@@ -299,7 +299,7 @@ public sealed partial class BarWindow : Window
             card.Show(shot.Path, shot.Copied);
             return;
         }
-        LiveScreenshotIcon.Glyph = "E73E";
+        LiveScreenshotIcon.Glyph = Glyphs.Check;
         confirm.Stop();
         confirm.Start();
     }
@@ -307,7 +307,7 @@ public sealed partial class BarWindow : Window
     void EndConfirmation()
     {
         confirm.Stop();
-        LiveScreenshotIcon.Glyph = "E722";
+        LiveScreenshotIcon.Glyph = Glyphs.Camera;
     }
 
     // Acrylic, or a solid background with a visible border when transparency is off or high contrast is on.
@@ -361,12 +361,13 @@ public sealed partial class BarWindow : Window
     {
         state = s;
         bool idle = s == RecorderState.Idle, countdown = s == RecorderState.Countdown, live = !idle && !countdown;
+        if (!idle) card.Dismiss();
         Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
         RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
         foreach (var c in new UIElement[] { ScreenshotButton, SourceSeparator, SourceSwitch, MicToggle, SoundToggle, MoreSeparator, MoreButton }) c.Visibility = Shown(idle);
         LiveScreenshotButton.Visibility = Shown(!idle);
         RecordButton.Visibility = Shown(!live);
-        RecordIcon.Glyph = countdown ? "" : "";
+        RecordIcon.Glyph = countdown ? Glyphs.Cancel : Glyphs.Record;
         CountdownText.Visibility = Shown(countdown);
         var recordName = countdown ? "Cancel countdown" : "Record";
         ToolTipService.SetToolTip(RecordButton, recordName);
@@ -374,7 +375,7 @@ public sealed partial class BarWindow : Window
         TimerText.Visibility = PauseButton.Visibility = StopButton.Visibility = Shown(live);
         FpsText.Visibility = Shown(live && showFps);
         var pauseName = s == RecorderState.Paused ? "Resume" : "Pause";
-        PauseIcon.Glyph = s == RecorderState.Paused ? "" : "";
+        PauseIcon.Glyph = s == RecorderState.Paused ? Glyphs.Play : Glyphs.Pause;
         ToolTipService.SetToolTip(PauseButton, pauseName);
         AutomationProperties.SetName(PauseButton, pauseName);
         DesktopSegment.IsEnabled = WindowSegment.IsEnabled = RegionSegment.IsEnabled = MoreButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;

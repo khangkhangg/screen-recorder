@@ -36,6 +36,14 @@ public class ScreenshotCardTests
         Assert.Equal(fitH, height, 2);
     }
 
+    [Theory]
+    [InlineData(true, false, 0, true)]          // the card is activated
+    [InlineData(false, true, 200, false)]       // the panel takes focus as it opens
+    [InlineData(false, true, 5000, true)]       // the card loses focus later
+    [InlineData(false, false, 5000, false)]     // activated without focus
+    public void Share_pause_ends(bool active, bool deactivated, long ms, bool ends) =>
+        Assert.Equal(ends, CardMath.SharePauseEnds(active, deactivated, ms));
+
     [Fact]
     public void Cropped_name_without_a_clash()
     {

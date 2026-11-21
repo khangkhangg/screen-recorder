@@ -17,6 +17,9 @@ public static class CardMath
         return (width * scale, height * scale);
     }
 
+    // The share panel takes focus as it opens, so only a deactivation a second later ends the share pause.
+    public static bool SharePauseEnds(bool active, bool deactivated, long msSincePanel) => active || deactivated && msSincePanel >= 1000;
+
     public static string CroppedName(IEnumerable<string> names, string original)
     {
         var taken = names.ToHashSet(StringComparer.OrdinalIgnoreCase);

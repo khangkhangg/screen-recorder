@@ -50,15 +50,32 @@ public static class Screenshot
     }
 
     // Writes a new PNG; the source file is only read.
-    public static async Task CropAsync(string source, string target, int x, int y, int width, int height)
+    public static Task CropAsync(string source, string target, int x, int y, int width, int height) =>
+        CropAsync(source, target, x, y, width, height, (crop, output) => crop.SaveAsync(output, CanvasBitmapFileFormat.Png).AsTask());
+
+    // The save function is a seam so a test can make the encoding fail.
+    internal static async Task CropAsync(string source, string target, int x, int y, int width, int height, Func<CanvasBitmap, IRandomAccessStream, Task> save)
     {
         var device = CanvasDevice.GetSharedDevice();
         CanvasBitmap bitmap;
         using (var input = File.OpenRead(source).AsRandomAccessStream()) bitmap = await CanvasBitmap.LoadAsync(device, input);
         using (bitmap)
         using (var crop = CanvasBitmap.CreateFromBytes(device, bitmap.GetPixelBytes(x, y, width, height), width, height, bitmap.Format))
-        using (var output = new FileStream(target, FileMode.CreateNew).AsRandomAccessStream())
-            await crop.SaveAsync(output, CanvasBitmapFileFormat.Png);
+        {
+            var file = new FileStream(target, FileMode.CreateNew);
+            try
+            {
+                using var output = file.AsRandomAccessStream();
+                await save(crop, output);
+            }
+            catch
+            {
+                file.Dispose();
+                File.Delete(target); // an empty or partial picture is worse than none
+                throw;
+            }
+            finally { file.Dispose(); }
+        }
     }
 
     public static string UniquePath(string folder, DateTime time)

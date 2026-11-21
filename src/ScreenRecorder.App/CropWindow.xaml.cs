@@ -4,6 +4,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -26,13 +27,14 @@ public sealed partial class CropWindow : Window
     RectInt32 crop, dragRect;
     Point dragStart;
     Grip grip;
-    bool saving;
+    bool saving, closed;
 
     CropWindow(string path, BitmapImage image, int width, int height, (double Width, double Height) fit, double scale, DisplayArea area, Action<string, bool> saved)
     {
         InitializeComponent();
         (this.path, this.width, this.height, this.saved) = (path, width, height, saved);
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        Closed += (_, _) => closed = true;
         if (!NativeMethods.ExcludeFromCapture(hwnd)) Debug.WriteLine("Crop window could not be excluded from capture");
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
         if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.IsResizable = presenter.IsMaximizable = false;
@@ -124,7 +126,11 @@ public sealed partial class CropWindow : Window
 
     void Root_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key == VirtualKey.Enter) Save();
+        if (e.Key == VirtualKey.Enter)
+        {
+            if (FocusManager.GetFocusedElement(Content.XamlRoot) is ButtonBase) return; // the focused button acts on Enter itself
+            Save();
+        }
         else if (e.Key == VirtualKey.Escape) Close();
         else return;
         e.Handled = true;
@@ -151,6 +157,7 @@ public sealed partial class CropWindow : Window
             NativeMethods.ShowWarning(hwnd, "The cropped screenshot could not be saved.", "Crop screenshot");
             return;
         }
+        if (closed) return; // a recording started and closed the window
         var copied = true;
         try { await Screenshot.CopyToClipboard(target); }
         catch (Exception e) { Debug.WriteLine(e); copied = false; } // the saved file is the result, as with a screenshot

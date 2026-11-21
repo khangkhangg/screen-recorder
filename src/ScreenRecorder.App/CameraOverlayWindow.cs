@@ -135,7 +135,7 @@ public sealed class CameraOverlayWindow : Window
             FontFamily = "Segoe Fluent Icons", FontSize = Math.Max(1, r.Width / 4),
             HorizontalAlignment = CanvasHorizontalAlignment.Center, VerticalAlignment = CanvasVerticalAlignment.Center,
         };
-        e.DrawingSession.DrawText("", new Windows.Foundation.Rect(0, 0, r.Width, r.Height), Colors.White, icon);
+        e.DrawingSession.DrawText(Glyphs.Video, new Windows.Foundation.Rect(0, 0, r.Width, r.Height), Colors.White, icon);
     }
 
     // Distance from the overlay center in the shape's own measure, so an edge grab follows the pointer 1 to 1.

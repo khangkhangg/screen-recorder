@@ -20,12 +20,14 @@ public sealed partial class ScreenshotCard : Window
 {
     const int CardWidth = 300, CardHeight = 258, Margin = 16;
     readonly nint hwnd;
-    readonly DispatcherQueueTimer life, copiedTimer;
+    readonly DispatcherQueueTimer life, copiedTimer, shareTimer;
     readonly List<CropWindow> crops = [];
     DataTransferManager? share;
     StorageFile? shareFile;
     string path = "";
     bool copied, hover, active, sharing;
+    long sharedAt;
+    int dismissals;
     int width, height, shows;
 
     public ScreenshotCard()
@@ -48,11 +50,16 @@ public sealed partial class ScreenshotCard : Window
         copiedTimer.Interval = TimeSpan.FromSeconds(2);
         copiedTimer.IsRepeating = false;
         copiedTimer.Tick += (_, _) => StatusText.Text = CardMath.StatusText(copied, width, height);
+        shareTimer = DispatcherQueue.CreateTimer();
+        shareTimer.Interval = TimeSpan.FromSeconds(60);
+        shareTimer.IsRepeating = false;
+        shareTimer.Tick += (_, _) => { sharing = false; Countdown(); };
         // Showing the card can raise Activated without giving it focus, so ask Windows which window has it.
         Activated += (_, e) =>
         {
             active = e.WindowActivationState != WindowActivationState.Deactivated && NativeMethods.GetForegroundWindow() == hwnd;
-            if (active) sharing = false; // the share panel gives focus back to the card when it closes
+            // the share panel gives focus back to the card when it closes
+            if (CardMath.SharePauseEnds(active, e.WindowActivationState == WindowActivationState.Deactivated, Environment.TickCount64 - sharedAt)) sharing = false;
             Countdown();
         };
         // Alt+F4 hides the card so the next screenshot can show it again; Close() from code still closes it.
@@ -115,10 +122,19 @@ public sealed partial class ScreenshotCard : Window
         if (!hover && !active && !sharing && AppWindow.IsVisible) life.Start();
     }
 
+    // A recording hides the card and drops any crop, so neither shows in the video.
+    public void Dismiss()
+    {
+        dismissals++;
+        Hide();
+        foreach (var c in crops.ToList()) c.Close();
+    }
+
     void Hide()
     {
         life.Stop();
         hover = sharing = false;
+        shareTimer.Stop();
         AppWindow.Hide();
     }
 
@@ -172,6 +188,8 @@ public sealed partial class ScreenshotCard : Window
                 share.DataRequested += Share_DataRequested;
             }
             sharing = true;
+            sharedAt = Environment.TickCount64;
+            shareTimer.Start(); // a panel can close without any event the card sees
             Countdown();
             DataTransferManagerInterop.ShowShareUIForWindow(hwnd);
         }
@@ -197,8 +215,11 @@ public sealed partial class ScreenshotCard : Window
     {
         var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
         Hide();
+        foreach (var c in crops.ToList()) c.Close(); // one crop window at a time
+        var run = dismissals;
         var crop = await CropWindow.OpenAsync(path, area, Show);
         if (crop is null) return;
+        if (run != dismissals) { crop.Close(); return; } // a recording started while the picture loaded
         crops.Add(crop);
         crop.Closed += (_, _) => crops.Remove(crop);
     }
