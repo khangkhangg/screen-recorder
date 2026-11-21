@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use recorder_core::frame_math::PixelSize;
-use windows::core::{h, IInspectable, IUnknown, Interface, Ref};
+use windows::core::{h, IInspectable, Interface, Ref};
 use windows::Foundation::Metadata::ApiInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
@@ -24,14 +24,12 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     ID2D1ColorContext, ID2D1DeviceContext, ID2D1Effect, ID2D1Image, CLSID_D2D1ColorManagement,
-    CLSID_D2D1HdrToneMap, CLSID_D2D1WhiteLevelAdjustment, D2D1_BITMAP_OPTIONS,
+    CLSID_D2D1WhiteLevelAdjustment, D2D1_BITMAP_OPTIONS,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_16BPC_FLOAT,
     D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT, D2D1_COLORMANAGEMENT_PROP_QUALITY,
     D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT, D2D1_COLORMANAGEMENT_QUALITY_BEST,
     D2D1_COLOR_SPACE_SCRGB, D2D1_COLOR_SPACE_SRGB, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_HDRTONEMAP_DISPLAY_MODE_SDR, D2D1_HDRTONEMAP_PROP_DISPLAY_MODE,
-    D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE, D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE,
     D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_PROPERTY_TYPE, D2D1_PROPERTY_TYPE_COLOR_CONTEXT,
     D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT,
     D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL, D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL,
@@ -63,13 +61,21 @@ const SCRGB_WHITE_NITS: f32 = 80.0;
 /// Textures a source writes into: the newest frame, one the caller holds, one being written.
 const POOL_TEXTURES: usize = 3;
 
-/// A captured frame. It holds a counted reference to its texture, and the source
-/// never writes into a texture that anyone else still holds, so it stays valid
-/// for as long as the caller keeps it.
+/// A captured frame. While any clone of a `Frame` is alive, the source does not write into
+/// its texture, so the picture stays as it was. Cloning only `frame.texture` does not count:
+/// keep the `Frame` itself.
 #[derive(Clone)]
 pub struct Frame {
     pub texture: ID3D11Texture2D,
     pub size: PixelSize,
+    /// Shared with the pool slot. A slot is free when the pool holds the only copy.
+    lease: Arc<()>,
+}
+
+impl Frame {
+    pub fn new(texture: ID3D11Texture2D, size: PixelSize) -> Frame {
+        Frame { texture, size, lease: Arc::new(()) }
+    }
 }
 
 pub trait Screen: Send {
@@ -99,7 +105,7 @@ struct Shared {
 
 struct State {
     latest: Option<Frame>,
-    textures: Vec<ID3D11Texture2D>,
+    slots: Vec<Frame>,
     size: PixelSize,
 }
 
@@ -113,8 +119,9 @@ struct Copier {
     hdr: Option<Hdr>,
 }
 
-/// Turns 16-bit float scRGB frames into standard sRGB: standard content keeps its
-/// brightness and highlights above standard white roll off instead of clipping.
+/// Turns 16-bit float scRGB frames into standard sRGB, so standard content keeps its
+/// brightness on every HDR monitor. Highlights brighter than standard white clip to white,
+/// because a tone curve that kept them apart dimmed white and grays on bright monitors.
 struct Hdr {
     context: ID2D1DeviceContext,
     input: ID2D1Effect,
@@ -142,20 +149,20 @@ impl ScreenSource {
         };
         let item = create_item(target).map_err(|e| win(e, Error::CaptureUnavailable, not_recordable))?;
         let item_size = item.Size().map_err(|e| win(e, Error::CaptureUnavailable, not_recordable))?;
-        if let Some((x, y, ..)) = region {
-            if x >= item_size.Width || y >= item_size.Height {
+        if let Some((x, y, width, height)) = region {
+            // The minimum applies to what is left after cropping at the monitor's edge.
+            if width.min(item_size.Width - x) < 16 || height.min(item_size.Height - y) < 16 {
                 return Err(unavailable(REGION_ERROR));
             }
         }
 
         let monitor = monitor_of(target);
-        let hdr = match hdr_peak_nits(monitor) {
-            Some(peak) => {
-                // shortcut: assumes the Windows default of 80 nits when the display API gives no SDR white level, replace if a PC shows wrong brightness.
-                let white = sdr_white_nits(monitor).unwrap_or(SCRGB_WHITE_NITS);
-                Some(Hdr::new(device, peak, white).map_err(|e| win(e, Error::Device, "HDR conversion could not be set up."))?)
-            }
-            None => None,
+        let hdr = if is_hdr(monitor) {
+            // shortcut: assumes 200 nits, as the C# app did, when the display API gives no SDR white level, replace if a PC shows wrong brightness.
+            let white = sdr_white_nits(monitor).unwrap_or(200.0);
+            Some(Hdr::new(device, white).map_err(|e| win(e, Error::Device, "HDR conversion could not be set up."))?)
+        } else {
+            None
         };
         let format = if hdr.is_some() {
             DirectXPixelFormat::R16G16B16A16Float
@@ -172,7 +179,7 @@ impl ScreenSource {
         };
         let shared = Arc::new(Shared {
             closed: AtomicBool::new(false),
-            state: Mutex::new(State { latest: None, textures: Vec::new(), size }),
+            state: Mutex::new(State { latest: None, slots: Vec::new(), size }),
             copier: Mutex::new(Copier {
                 device: device.clone(),
                 format,
@@ -288,31 +295,32 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> windows::core
         if !copier.is_region {
             let mut state = lock(&shared.state);
             state.size = PixelSize { width: content.Width, height: content.Height };
-            state.textures.clear();
+            state.slots.clear();
         }
         return frame.Close();
     }
     let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
     let source: ID3D11Texture2D = unsafe { access.GetInterface() }?;
-    let (target, size) = {
+    let target = {
         let mut state = lock(&shared.state);
-        match free_texture(&mut state, &copier.device)? {
-            Some(t) => (t, state.size),
+        match free_slot(&mut state, &copier.device)? {
+            Some(t) => t,
             // The caller holds every texture, so skip this frame rather than overwrite one.
             None => return frame.Close(),
         }
     };
-    copier.copy(&source, &target, size)?;
-    lock(&shared.state).latest = Some(Frame { texture: target, size });
+    copier.copy(&source, &target.texture, target.size)?;
+    lock(&shared.state).latest = Some(target);
     frame.Close()
 }
 
-/// Returns a pool texture that only the pool holds, creating one while the pool is small.
-fn free_texture(state: &mut State, device: &Device) -> windows::core::Result<Option<ID3D11Texture2D>> {
-    if let Some(t) = state.textures.iter().find(|t| ref_count(t) == 1) {
-        return Ok(Some(t.clone()));
+/// Returns a pool slot that nobody outside the pool holds, creating one while the pool is small.
+/// The returned clone keeps the slot busy until it is dropped or becomes the latest frame.
+fn free_slot(state: &mut State, device: &Device) -> windows::core::Result<Option<Frame>> {
+    if let Some(slot) = state.slots.iter().find(|s| Arc::strong_count(&s.lease) == 1) {
+        return Ok(Some(slot.clone()));
     }
-    if state.textures.len() >= POOL_TEXTURES {
+    if state.slots.len() >= POOL_TEXTURES {
         return Ok(None);
     }
     let desc = D3D11_TEXTURE2D_DESC {
@@ -328,20 +336,9 @@ fn free_texture(state: &mut State, device: &Device) -> windows::core::Result<Opt
     };
     let mut texture = None;
     unsafe { device.d3d().CreateTexture2D(&desc, None, Some(&mut texture)) }?;
-    let texture = texture.ok_or_else(windows::core::Error::empty)?;
-    state.textures.push(texture.clone());
-    Ok(Some(texture))
-}
-
-fn ref_count(texture: &ID3D11Texture2D) -> u32 {
-    let raw = texture.as_raw();
-    // SAFETY: the pointer is alive while we hold `texture`, and AddRef followed by
-    // Release leaves the count as it was. Release returns that count.
-    unsafe {
-        let unknown = IUnknown::from_raw_borrowed(&raw).expect("a live texture is never null");
-        (unknown.vtable().AddRef)(raw);
-        (unknown.vtable().Release)(raw)
-    }
+    let slot = Frame::new(texture.ok_or_else(windows::core::Error::empty)?, state.size);
+    state.slots.push(slot.clone());
+    Ok(Some(slot))
 }
 
 impl Copier {
@@ -377,55 +374,45 @@ impl Copier {
 }
 
 impl Hdr {
-    fn new(device: &Device, peak_nits: f32, sdr_white_nits: f32) -> windows::core::Result<Hdr> {
-        unsafe {
-            let context = device.d2d().CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let mut controls = context.GetRenderingControls();
-            controls.bufferPrecision = D2D1_BUFFER_PRECISION_16BPC_FLOAT;
-            context.SetRenderingControls(&controls);
+    fn new(device: &Device, sdr_white_nits: f32) -> windows::core::Result<Hdr> {
+        let context = unsafe { device.d2d().CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE) }?;
+        let mut controls = unsafe { context.GetRenderingControls() };
+        controls.bufferPrecision = D2D1_BUFFER_PRECISION_16BPC_FLOAT;
+        unsafe { context.SetRenderingControls(&controls) };
 
-            // Puts standard white back at 1.0. Measured on this PC, the effect scales by input / output.
-            let white = context.CreateEffect(&CLSID_D2D1WhiteLevelAdjustment)?;
-            set(&white, D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL.0, D2D1_PROPERTY_TYPE_FLOAT, &SCRGB_WHITE_NITS.to_le_bytes())?;
-            set(&white, D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL.0, D2D1_PROPERTY_TYPE_FLOAT, &sdr_white_nits.to_le_bytes())?;
+        // Puts standard white back at 1.0. Measured on this PC, the effect scales by input / output.
+        let white = unsafe { context.CreateEffect(&CLSID_D2D1WhiteLevelAdjustment) }?;
+        set(&white, D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL.0, D2D1_PROPERTY_TYPE_FLOAT, &SCRGB_WHITE_NITS.to_le_bytes())?;
+        set(&white, D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL.0, D2D1_PROPERTY_TYPE_FLOAT, &sdr_white_nits.to_le_bytes())?;
 
-            // Rolls off highlights above standard white. The tone curve starts bending below its
-            // output maximum, so that maximum sits 10% above white: measured here, 1.0 dimmed
-            // white to 245 and 1.1 keeps it at 252. The top of the roll-off still clips at 255.
-            let tone = context.CreateEffect(&CLSID_D2D1HdrToneMap)?;
-            let top = 1.1 * SCRGB_WHITE_NITS;
-            let peak = (peak_nits * SCRGB_WHITE_NITS / sdr_white_nits).max(top);
-            set(&tone, D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE.0, D2D1_PROPERTY_TYPE_FLOAT, &peak.to_le_bytes())?;
-            set(&tone, D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE.0, D2D1_PROPERTY_TYPE_FLOAT, &top.to_le_bytes())?;
-            set(&tone, D2D1_HDRTONEMAP_PROP_DISPLAY_MODE.0, D2D1_PROPERTY_TYPE_ENUM, &(D2D1_HDRTONEMAP_DISPLAY_MODE_SDR.0 as u32).to_le_bytes())?;
-            tone.SetInput(0, &white.GetOutput()?, true);
-
-            let to_srgb = context.CreateEffect(&CLSID_D2D1ColorManagement)?;
-            set_color(&to_srgb, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0, &context.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?)?;
-            set_color(&to_srgb, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0, &context.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?)?;
-            set(&to_srgb, D2D1_COLORMANAGEMENT_PROP_QUALITY.0, D2D1_PROPERTY_TYPE_ENUM, &(D2D1_COLORMANAGEMENT_QUALITY_BEST.0 as u32).to_le_bytes())?;
-            to_srgb.SetInput(0, &tone.GetOutput()?, true);
-
-            Ok(Hdr { output: to_srgb.GetOutput()?, context, input: white })
-        }
+        let (scrgb, srgb) = unsafe {
+            (context.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?, context.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?)
+        };
+        let to_srgb = unsafe { context.CreateEffect(&CLSID_D2D1ColorManagement) }?;
+        set_color(&to_srgb, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0, &scrgb)?;
+        set_color(&to_srgb, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0, &srgb)?;
+        let best = (D2D1_COLORMANAGEMENT_QUALITY_BEST.0 as u32).to_le_bytes();
+        set(&to_srgb, D2D1_COLORMANAGEMENT_PROP_QUALITY.0, D2D1_PROPERTY_TYPE_ENUM, &best)?;
+        let output = unsafe {
+            to_srgb.SetInput(0, &white.GetOutput()?, true);
+            to_srgb.GetOutput()?
+        };
+        Ok(Hdr { output, context, input: white })
     }
 
     fn draw(&self, source: &ID3D11Texture2D, target: &ID3D11Texture2D, area: D2D_RECT_F) -> windows::core::Result<()> {
+        let input_properties = bitmap_properties(DXGI_FORMAT_R16G16B16A16_FLOAT, D2D1_BITMAP_OPTIONS_NONE);
+        let output_properties = bitmap_properties(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW);
+        let (source, target) = (source.cast::<IDXGISurface>()?, target.cast::<IDXGISurface>()?);
+        let input = unsafe { self.context.CreateBitmapFromDxgiSurface(&source, Some(&input_properties)) }?;
+        let output = unsafe { self.context.CreateBitmapFromDxgiSurface(&target, Some(&output_properties)) }?;
         unsafe {
-            let input = self.context.CreateBitmapFromDxgiSurface(
-                &source.cast::<IDXGISurface>()?,
-                Some(&bitmap_properties(DXGI_FORMAT_R16G16B16A16_FLOAT, D2D1_BITMAP_OPTIONS_NONE)),
-            )?;
-            let output = self.context.CreateBitmapFromDxgiSurface(
-                &target.cast::<IDXGISurface>()?,
-                Some(&bitmap_properties(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW)),
-            )?;
             self.input.SetInput(0, &input, true);
             self.context.SetTarget(&output);
             self.context.BeginDraw();
             self.context.DrawImage(&self.output, None, Some(&area), D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_COPY);
             let drawn = self.context.EndDraw(None, None);
-            // Let go of both surfaces, so the pool can reuse them and the reference count stays exact.
+            // Let go of both surfaces, so the capture pool can reuse its surface.
             self.context.SetTarget(None::<&ID2D1Image>);
             self.input.SetInput(0, None::<&ID2D1Image>, false);
             drawn
@@ -444,13 +431,13 @@ fn bitmap_properties(format: DXGI_FORMAT, options: D2D1_BITMAP_OPTIONS) -> D2D1_
     }
 }
 
-unsafe fn set(effect: &ID2D1Effect, index: i32, kind: D2D1_PROPERTY_TYPE, value: &[u8]) -> windows::core::Result<()> {
+fn set(effect: &ID2D1Effect, index: i32, kind: D2D1_PROPERTY_TYPE, value: &[u8]) -> windows::core::Result<()> {
     unsafe { effect.SetValue(index as u32, kind, value) }
 }
 
 /// Interface properties take the pointer itself as their value, and the effect keeps its own reference.
-unsafe fn set_color(effect: &ID2D1Effect, index: i32, color: &ID2D1ColorContext) -> windows::core::Result<()> {
-    unsafe { set(effect, index, D2D1_PROPERTY_TYPE_COLOR_CONTEXT, &(color.as_raw() as usize).to_ne_bytes()) }
+fn set_color(effect: &ID2D1Effect, index: i32, color: &ID2D1ColorContext) -> windows::core::Result<()> {
+    set(effect, index, D2D1_PROPERTY_TYPE_COLOR_CONTEXT, &(color.as_raw() as usize).to_ne_bytes())
 }
 
 fn create_item(target: &CaptureTarget) -> windows::core::Result<GraphicsCaptureItem> {
@@ -482,18 +469,17 @@ fn target_exists(target: &CaptureTarget) -> bool {
     }
 }
 
-/// The monitor's peak brightness in nits when it runs in HDR, or `None` for SDR.
-fn hdr_peak_nits(monitor: HMONITOR) -> Option<f32> {
-    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.ok()?;
+fn is_hdr(monitor: HMONITOR) -> bool {
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else { return false };
     for adapter in (0..).map_while(|i| unsafe { factory.EnumAdapters1(i) }.ok()) {
         for output in (0..).map_while(|i| unsafe { adapter.EnumOutputs(i) }.ok()) {
             let Ok(desc) = output.cast::<IDXGIOutput6>().and_then(|o| unsafe { o.GetDesc1() }) else { continue };
             if desc.Monitor == monitor {
-                return (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020).then_some(desc.MaxLuminance);
+                return desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
             }
         }
     }
-    None
+    false
 }
 
 /// The "SDR content brightness" the user set in Windows HDR settings, in nits.
@@ -587,4 +573,72 @@ fn sample_grid(frame: &Frame, device: &Device) -> windows::core::Result<Vec<u8>>
 /// Locking still works after a panic on another thread, because the data stays consistent.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Graphics::Direct3D11::D3D11_SUBRESOURCE_DATA;
+
+    /// f32 to 16-bit float bits, for the normal positive values these tests use.
+    fn half(v: f32) -> u16 {
+        let bits = v.to_bits();
+        let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+        ((exp as u32) << 10 | (bits & 0x7f_ffff) >> 13) as u16
+    }
+
+    fn texture(device: &Device, format: DXGI_FORMAT, bind: u32, data: Option<&[u16]>) -> ID3D11Texture2D {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: 32,
+            Height: 16,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: bind,
+            ..Default::default()
+        };
+        let init = data.map(|d| D3D11_SUBRESOURCE_DATA { pSysMem: d.as_ptr().cast(), SysMemPitch: 32 * 8, SysMemSlicePitch: 0 });
+        let mut t = None;
+        unsafe { device.d3d().CreateTexture2D(&desc, init.as_ref().map(|i| i as *const _), Some(&mut t)) }.unwrap();
+        t.unwrap()
+    }
+
+    /// Converts a frame whose left half is SDR gray 128 and right half SDR white, as Windows
+    /// composes them on an HDR monitor, and returns the gray and white results.
+    /// The monitor's peak brightness is not an input, because the conversion clips at white.
+    fn convert(white_nits: f32) -> ([u8; 4], [u8; 4]) {
+        let device = Device::new().unwrap();
+        let white = white_nits / SCRGB_WHITE_NITS;
+        let gray = ((128.0f32 / 255.0 + 0.055) / 1.055).powf(2.4) * white;
+        let pixels: Vec<u16> = (0..16 * 32)
+            .flat_map(|i| {
+                let v = half(if i % 32 < 16 { gray } else { white });
+                [v, v, v, half(1.0)]
+            })
+            .collect();
+        let source = texture(&device, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_SHADER_RESOURCE.0 as u32, Some(&pixels));
+        let target = texture(&device, DXGI_FORMAT_B8G8R8A8_UNORM, (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32, None);
+        let hdr = Hdr::new(&device, white_nits).unwrap();
+        hdr.draw(&source, &target, D2D_RECT_F { left: 0.0, top: 0.0, right: 32.0, bottom: 16.0 }).unwrap();
+        let grid = sample_grid(&Frame::new(target, PixelSize { width: 32, height: 16 }), &device).unwrap();
+        let at = |gx: usize| [grid[gx * 4], grid[gx * 4 + 1], grid[gx * 4 + 2], grid[gx * 4 + 3]];
+        (at(2), at(13))
+    }
+
+    #[test]
+    #[ignore = "needs the desktop"]
+    fn standard_content_is_unchanged_on_every_monitor() {
+        let mut failed = Vec::new();
+        for (peak, white) in [(295.0, 240.0), (600.0, 200.0), (1000.0, 200.0), (1500.0, 300.0)] {
+            let (g, w) = convert(white);
+            println!("peak {peak} nits, white {white} nits: gray {g:?}, white {w:?} (BGRA)");
+            let ok = g[..3].iter().all(|c| (126..=130).contains(c)) && w[..3].iter().all(|c| *c >= 250);
+            if !ok {
+                failed.push((peak, white));
+            }
+        }
+        assert!(failed.is_empty(), "failed for {failed:?}");
+    }
 }
