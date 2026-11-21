@@ -420,7 +420,7 @@ impl Hdr {
     }
 }
 
-fn bitmap_properties(format: DXGI_FORMAT, options: D2D1_BITMAP_OPTIONS) -> D2D1_BITMAP_PROPERTIES1 {
+pub(crate) fn bitmap_properties(format: DXGI_FORMAT, options: D2D1_BITMAP_OPTIONS) -> D2D1_BITMAP_PROPERTIES1 {
     D2D1_BITMAP_PROPERTIES1 {
         // GDI-drawn windows leave alpha at 0, and un-premultiplying those pixels turns them white.
         pixelFormat: D2D1_PIXEL_FORMAT { format, alphaMode: D2D1_ALPHA_MODE_IGNORE },

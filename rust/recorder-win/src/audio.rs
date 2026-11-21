@@ -137,7 +137,7 @@ impl Drop for AudioSource {
 }
 
 /// Runs `work` with COM started as multithreaded on this thread, and ends COM after `work` has dropped its objects.
-fn with_com<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn with_com<T>(work: impl FnOnce() -> T) -> T {
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok();
     let result = work();
     if com.is_ok() {
