@@ -96,17 +96,18 @@ pub fn windows() -> Vec<WindowInfo> {
     let own = unsafe { GetCurrentProcessId() };
     handles
         .into_iter()
-        .filter_map(|h| unsafe {
+        .filter_map(|h| {
             let mut cloaked = 0u32;
-            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut c_void, 4);
+            let _ = unsafe { DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut c_void, 4) };
             let mut pid = 0;
-            GetWindowThreadProcessId(h, Some(&mut pid));
-            let tool = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0;
-            if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() || cloaked != 0 || tool || pid == own {
+            unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+            let tool = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW.0 != 0;
+            let shown = unsafe { IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() };
+            if !shown || cloaked != 0 || tool || pid == own {
                 return None;
             }
-            let mut text = vec![0u16; GetWindowTextLengthW(h).max(0) as usize + 1];
-            let n = GetWindowTextW(h, &mut text).max(0) as usize;
+            let mut text = vec![0u16; unsafe { GetWindowTextLengthW(h) }.max(0) as usize + 1];
+            let n = unsafe { GetWindowTextW(h, &mut text) }.max(0) as usize;
             let title = String::from_utf16_lossy(&text[..n]);
             (!title.trim().is_empty()).then_some(WindowInfo { handle: h.0 as isize, title })
         })
@@ -115,6 +116,10 @@ pub fn windows() -> Vec<WindowInfo> {
 
 /// The one window whose title contains `title_part`, ignoring case. `Err` holds the matches when there are 0 or 2+.
 pub fn find_window(title_part: &str) -> Result<WindowInfo, Vec<WindowInfo>> {
+    // A blank title would match every window.
+    if title_part.trim().is_empty() {
+        return Err(Vec::new());
+    }
     let part = title_part.to_lowercase();
     let mut found: Vec<WindowInfo> = windows().into_iter().filter(|w| w.title.to_lowercase().contains(&part)).collect();
     if found.len() == 1 {
@@ -131,6 +136,12 @@ fn utf16(s: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_window_with_blank_title_finds_nothing() {
+        assert_eq!(Err(vec![]), find_window(""));
+        assert_eq!(Err(vec![]), find_window("  "));
+    }
 
     #[test]
     fn kind_names_each_target() {

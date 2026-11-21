@@ -18,8 +18,8 @@ pub fn init_process() -> Result<()> {
     // A repeat call returns S_FALSE, which counts as success.
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
-        .map_err(|e| error::win(e, |m| Error::NotSupported(format!("COM could not start on this thread. {m}"))))?;
+        .map_err(|e| error::win(e, Error::NotSupported, "COM could not start on this thread."))?;
     // Media Foundation counts its starts, so repeats are allowed.
     unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }
-        .map_err(|e| error::win(e, |m| Error::Encoder(format!("Media Foundation could not start. {m}"))))
+        .map_err(|e| error::win(e, Error::Encoder, "Media Foundation could not start."))
 }

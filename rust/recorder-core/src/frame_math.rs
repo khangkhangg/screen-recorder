@@ -45,7 +45,7 @@ pub fn letterbox(source: PixelSize, frame: PixelSize) -> RectF {
 
 pub fn bitrate(size: PixelSize, frame_rate: i32) -> i32 {
     let pixels = i64::from(size.width).saturating_mul(i64::from(size.height));
-    (pixels.saturating_mul(i64::from(frame_rate)) / 10).min(i64::from(i32::MAX)) as i32
+    (pixels.saturating_mul(i64::from(frame_rate)) / 10).clamp(0, i64::from(i32::MAX)) as i32
 }
 
 #[cfg(test)]
@@ -85,6 +85,11 @@ mod tests {
     #[test]
     fn bitrate_1080p60() {
         assert_eq!(12_441_600, bitrate(p(1920, 1080), 60));
+    }
+
+    #[test]
+    fn bitrate_with_negative_width_is_zero() {
+        assert_eq!(0, bitrate(p(-1920, 1080), 60));
     }
 
     #[test]

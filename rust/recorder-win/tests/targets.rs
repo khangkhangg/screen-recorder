@@ -15,7 +15,8 @@ fn first_monitor_is_primary_with_a_size() {
 #[ignore = "needs the desktop"]
 fn device_is_created() {
     init_process().unwrap();
-    Device::new().unwrap();
+    // This PC has a hardware GPU, so the video flag is accepted.
+    assert!(Device::new().unwrap().video_support());
 }
 
 #[test]
