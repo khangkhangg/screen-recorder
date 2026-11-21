@@ -7,7 +7,7 @@ use recorder_win::screenshot::{capture, copy_to_clipboard, crop, unique_path};
 use recorder_win::{init_process, monitors, CaptureTarget, Error};
 use windows::core::{w, HSTRING};
 use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, HWND_MESSAGE};
-use windows::Win32::Foundation::{GENERIC_READ, HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{GENERIC_READ, HANDLE, HGLOBAL};
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
