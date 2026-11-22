@@ -29,7 +29,8 @@ internal interface IAudioSource : IAsyncDisposable
 internal interface IVideoWriter : IDisposable
 {
     long FramesBehind { get; }
-    void WriteFrame(IDirect3DSurface surface, long frameIndex);
+    // One sample stands for count frames, so repeated frames cost one texture and one encode.
+    void WriteFrame(IDirect3DSurface surface, long frameIndex, long count = 1);
     void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex);
 }
 

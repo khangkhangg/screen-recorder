@@ -19,6 +19,7 @@ public sealed class ScreenSource : IScreenSource
 {
     // shortcut: assumes the Windows "SDR content brightness" is 200 nits and clips HDR highlights, read DISPLAYCONFIG_SDR_WHITE_LEVEL if HDR captures look too bright or dark.
     const float SdrWhiteNits = 200;
+    static readonly ColorManagementProfile ScRgbProfile = new(CanvasColorSpace.ScRgb), SrgbProfile = new(CanvasColorSpace.Srgb);
     const string RegionError = "The selected area is empty or outside the screen.";
 
     readonly CaptureTarget _target;
@@ -32,7 +33,7 @@ public sealed class ScreenSource : IScreenSource
     readonly bool _hdr;
     readonly Lock _lock = new();
     SizeInt32 _poolSize;
-    CanvasBitmap? _pending, _current;
+    CanvasRenderTarget? _pending, _current, _spare;
     bool _disposed;
 
     public PixelSize SourceSize { get { lock (_lock) return _sourceSize; } }
@@ -118,7 +119,7 @@ public sealed class ScreenSource : IScreenSource
         {
             if (_pending is not null)
             {
-                _current?.Dispose();
+                Recycle(_current);
                 _current = _pending;
                 _pending = null;
             }
@@ -151,22 +152,36 @@ public sealed class ScreenSource : IScreenSource
                 return;
             }
         }
-        var copy = Copy(frame.Surface);
+        CanvasRenderTarget? spare;
+        lock (_lock) (spare, _spare) = (_spare, null);
+        CanvasRenderTarget copy;
+        using (var surface = frame.Surface) copy = Copy(surface, spare);
         lock (_lock)
         {
             if (_disposed) { copy.Dispose(); return; }
-            _pending?.Dispose();
+            Recycle(_pending);
             _pending = copy;
         }
     }
 
+    // Call under _lock. Keeps one free target, so frames reuse targets instead of allocating one each.
+    void Recycle(CanvasRenderTarget? target)
+    {
+        if (_spare == null) _spare = target;
+        else target?.Dispose();
+    }
+
     // GPU copy, because the pool reuses the frame's surface once the frame is disposed.
-    CanvasBitmap Copy(IDirect3DSurface surface)
+    CanvasRenderTarget Copy(IDirect3DSurface surface, CanvasRenderTarget? reuse)
     {
         using var source = CanvasBitmap.CreateFromDirect3D11Surface(_device, surface);
         var (x, y, w, h) = _target is RegionTarget r ? (r.X, r.Y, r.Width, r.Height) : (0, 0, _poolSize.Width, _poolSize.Height);
-        var result = new CanvasRenderTarget(_device, w, h, 96);
+        bool fits = reuse != null && reuse.SizeInPixels.Width == w && reuse.SizeInPixels.Height == h;
+        if (!fits) reuse?.Dispose();
+        var result = fits ? reuse! : new CanvasRenderTarget(_device, w, h, 96);
         int cw = Math.Min(w, (int)source.SizeInPixels.Width - x), ch = Math.Min(h, (int)source.SizeInPixels.Height - y);
+        // A reused target still holds an old frame where this one does not reach.
+        if (fits && (cw < w || ch < h)) using (var ds = result.CreateDrawingSession()) ds.Clear(default(Windows.UI.Color));
         if (cw <= 0 || ch <= 0) return result;
         if (!_hdr)
         {
@@ -184,8 +199,8 @@ public sealed class ScreenSource : IScreenSource
         using var toSrgb = new ColorManagementEffect
         {
             Source = scale,
-            SourceColorProfile = new ColorManagementProfile(CanvasColorSpace.ScRgb),
-            OutputColorProfile = new ColorManagementProfile(CanvasColorSpace.Srgb),
+            SourceColorProfile = ScRgbProfile,
+            OutputColorProfile = SrgbProfile,
             BufferPrecision = CanvasBufferPrecision.Precision16Float,
         };
         using (var ds = result.CreateDrawingSession())
@@ -234,7 +249,8 @@ public sealed class ScreenSource : IScreenSource
         {
             _pending?.Dispose();
             _current?.Dispose();
-            _pending = _current = null;
+            _spare?.Dispose();
+            _pending = _current = _spare = null;
         }
     }
 }

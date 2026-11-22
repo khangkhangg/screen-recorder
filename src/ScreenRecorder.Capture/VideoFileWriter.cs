@@ -25,6 +25,7 @@ public sealed class VideoFileWriter : IVideoWriter
     readonly BlockingCollection<(int Stream, IMFSample Sample)> _queue = new();
     readonly Thread _thread;
     long _behind;
+    short[] _pcm = [];
     Exception? _error;
     bool _disposed;
 
@@ -118,7 +119,7 @@ public sealed class VideoFileWriter : IVideoWriter
     }
 
     // Copies the frame on the GPU, because the caller draws the next frame into the same render target.
-    public void WriteFrame(IDirect3DSurface surface, long frameIndex)
+    public void WriteFrame(IDirect3DSurface surface, long frameIndex, long count = 1)
     {
         ThrowIfFailed();
         using var source = new ID3D11Texture2D(NativeMethods.DxgiInterface(surface, typeof(ID3D11Texture2D).GUID));
@@ -129,7 +130,7 @@ public sealed class VideoFileWriter : IVideoWriter
         using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, copy, 0, false);
         using (var buffer2D = buffer.QueryInterface<IMF2DBuffer>()) buffer.CurrentLength = buffer2D.ContiguousLength;
         Interlocked.Increment(ref _behind);
-        Enqueue(_videoStream, buffer, frameIndex * TicksPerSecond / _frameRate, TicksPerSecond / _frameRate);
+        Enqueue(_videoStream, buffer, frameIndex * TicksPerSecond / _frameRate, count * TicksPerSecond / _frameRate);
     }
 
     public void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex)
@@ -137,14 +138,16 @@ public sealed class VideoFileWriter : IVideoWriter
         ThrowIfFailed();
         if (_audioStream < 0) throw new InvalidOperationException("This writer was opened without audio.");
         // The AAC encoder takes 16-bit PCM only.
-        var pcm = new short[interleavedStereo48k.Length];
-        for (int i = 0; i < pcm.Length; i++) pcm[i] = (short)Math.Clamp(interleavedStereo48k[i] * 32767f, -32768f, 32767f);
-        using var buffer = MediaFactory.MFCreateMemoryBuffer(pcm.Length * 2);
+        int n = interleavedStereo48k.Length;
+        if (_pcm.Length < n) _pcm = new short[n];
+        var pcm = _pcm;
+        for (int i = 0; i < n; i++) pcm[i] = (short)Math.Clamp(interleavedStereo48k[i] * 32767f, -32768f, 32767f);
+        using var buffer = MediaFactory.MFCreateMemoryBuffer(n * 2);
         buffer.Lock(out var data, out _, out _);
-        Marshal.Copy(pcm, 0, data, pcm.Length);
+        Marshal.Copy(pcm, 0, data, n);
         buffer.Unlock();
-        buffer.CurrentLength = pcm.Length * 2;
-        long frames = pcm.Length / 2;
+        buffer.CurrentLength = n * 2;
+        long frames = n / 2;
         Enqueue(_audioStream, buffer, firstSampleIndex * TicksPerSecond / AudioRate, frames * TicksPerSecond / AudioRate);
     }
 

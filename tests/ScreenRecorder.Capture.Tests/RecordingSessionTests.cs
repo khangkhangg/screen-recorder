@@ -223,6 +223,18 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Stop_writes_the_final_backlog_in_few_writes()
+    {
+        FakeWriter? final = null;
+        var f = new TestFactory { Wrap = (name, w) => name == "final.mp4" ? final = new FakeWriter(w, behind: 100) : w };
+        await using var s = await Start(Options(), f);
+        await Task.Delay(1000);
+        await s.StopAsync();
+        // The slow writer leaves about 60 frames for Stop, which must not become 60 writes.
+        Assert.InRange(final!.Writes, 1, 5);
+    }
+
+    [Fact]
     public async Task Large_frame_is_capped_at_30()
     {
         var f = new TestFactory { Screen = () => new FakeScreen { SourceSize = new PixelSize(3840, 2160) } };
@@ -310,8 +322,7 @@ public class RecordingSessionTests
         await Task.Delay(10_000);
         var watch = Stopwatch.StartNew();
         var result = await s.StopAsync();
-        var stopTime = watch.Elapsed;
-        var final = MediaInfo.Read(Path.Combine(result.Folder, "final.mp4"));
+        var stopTime = watch.Elapsed;        var final = MediaInfo.Read(Path.Combine(result.Folder, "final.mp4"));
         var screen = MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4"));
         Assert.True(result.DroppedFrames * 100 < final.FrameCount, $"{result.DroppedFrames} of {final.FrameCount} frames dropped");
         Assert.Equal(p.FrameSize.Width, final.Width);
@@ -402,10 +413,13 @@ public class RecordingSessionTests
     {
         public long FramesBehind => behind >= 0 ? behind : inner.FramesBehind;
 
-        public void WriteFrame(IDirect3DSurface surface, long frameIndex)
+        public int Writes;
+
+        public void WriteFrame(IDirect3DSurface surface, long frameIndex, long count = 1)
         {
-            if (throwAt >= 0 && frameIndex >= throwAt) throw new IOException("There is not enough space on the disk.");
-            inner.WriteFrame(surface, frameIndex);
+            Writes++;
+            if (throwAt >= 0 && frameIndex + count > throwAt) throw new IOException("There is not enough space on the disk.");
+            inner.WriteFrame(surface, frameIndex, count);
         }
 
         public void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex) => inner.WriteAudio(interleavedStereo48k, firstSampleIndex);

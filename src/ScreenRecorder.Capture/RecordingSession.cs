@@ -39,6 +39,7 @@ public sealed class RecordingSession : IAsyncDisposable
     readonly List<SourceEntry> _sources = [];
     readonly List<Track> _tracks = [];
     readonly float[] _drain = new float[AudioRate];
+    float[] _mix = [], _buffer = [];
     readonly TaskCompletionSource<RecordingResult> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     RecordingClock _clock = null!;
     int _rate;
@@ -274,7 +275,7 @@ public sealed class RecordingSession : IAsyncDisposable
             Quietly(() =>
             {
                 if (_finalW != null && _lastFinal != null)
-                    for (; _finalNext < _written; _finalNext++) _finalW.WriteFrame(_lastFinal, _finalNext);
+                    if (_finalNext < _written) _finalW.WriteFrame(_lastFinal, _finalNext, _written - _finalNext);
             });
             DisposeAll();
             RecordingResult result;
@@ -314,7 +315,8 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             if (_lastCam != null)
                 using (var ds = _camTarget!.CreateDrawingSession()) ds.DrawImage(_lastCam);
-            for (; _camWritten < camDue; _camWritten++) _camW.WriteFrame(_camTarget!, _camWritten);
+            _camW.WriteFrame(_camTarget!, _camWritten, camDue - _camWritten);
+            _camWritten = camDue;
         }
         if (_tracks.Count > 0) WriteSound(flush);
     }
@@ -329,7 +331,8 @@ public sealed class RecordingSession : IAsyncDisposable
         if (_cam != null && _cam.TryGetLatestFrame(out var camera)) _lastCam = camera;
 
         var screen = _compositor!.DrawScreen(_lastScreen!);
-        for (; _written < due; _written++) _screenW!.WriteFrame(screen, _written);
+        if (due > _written) _screenW!.WriteFrame(screen, _written, due - _written);
+        _written = due;
         if (_finalW is null) return;
         // A hardware encoder holds the shared device lock, so WriteFrame itself can be slow before FramesBehind grows.
         // A late loop skips final.mp4 too, which keeps screen.mp4 on time.
@@ -337,14 +340,12 @@ public sealed class RecordingSession : IAsyncDisposable
         long skipped = due - first;
         if (_lastFinal is null || (!late && _finalW.FramesBehind <= FinalMaxBehind))
         {
-            // Skipped indexes get the previous final frame, at most 2 per tick, so final.mp4 keeps a constant frame rate.
-            for (int n = 0; n < 2 && _finalNext < first; n++, _finalNext++) _finalW.WriteFrame(_lastFinal!, _finalNext);
-            if (_finalNext == first)
-            {
-                _lastFinal = _compositor.DrawFinal(_lastScreen!, _lastCam, _layout);
-                for (; _finalNext < due; _finalNext++) _finalW.WriteFrame(_lastFinal, _finalNext);
-                skipped = 0;
-            }
+            // Skipped indexes get the previous final frame as one long sample, so final.mp4 has no gaps.
+            if (_finalNext < first) _finalW.WriteFrame(_lastFinal!, _finalNext, first - _finalNext);
+            _lastFinal = _compositor.DrawFinal(_lastScreen!, _lastCam, _layout);
+            _finalW.WriteFrame(_lastFinal, first, due - first);
+            _finalNext = due;
+            skipped = 0;
         }
         _dropped += skipped;
     }
@@ -367,10 +368,13 @@ public sealed class RecordingSession : IAsyncDisposable
         if (target > _samples)
         {
             int n = (int)(target - _samples) * 2;
-            float[] mix = new float[n], buffer = new float[n];
+            if (_mix.Length < n) (_mix, _buffer) = (new float[n], new float[n]);
+            var mix = _mix.AsSpan(0, n);
+            var buffer = _buffer.AsSpan(0, n);
+            mix.Clear();
             foreach (var t in _tracks)
             {
-                Array.Clear(buffer);
+                buffer.Clear();
                 // Whatever the source has not delivered stays zero, which pads the file with silence.
                 t.Source?.Read(buffer);
                 t.Wav?.Write(buffer);

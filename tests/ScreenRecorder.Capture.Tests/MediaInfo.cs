@@ -15,9 +15,16 @@ public record MediaInfo(TimeSpan Duration, int FrameCount, int Width, int Height
         var video = Samples(reader, SourceReaderIndex.FirstVideoStream);
         var audio = HasAudio(reader) ? Samples(reader, SourceReaderIndex.FirstAudioStream) : [];
         video.Sort();
-        bool constant = video.Count > 1 && video.Zip(video.Skip(1), (a, b) => b.Time - a.Time)
-            .All(d => Math.Abs(d - (video[1].Time - video[0].Time)) <= 1);
-        return new(Length(video), video.Count, (int)(size >> 32), (int)(size & 0xFFFFFFFF), constant, Length(audio));
+        // Repeated frames are one longer sample, so frames are counted along the timeline and starts are checked against the frame grid.
+        ulong rate = videoType.GetUInt64(MediaTypeAttributeKeys.FrameRate);
+        double frame = 10_000_000.0 * (uint)rate / (rate >> 32);
+        bool constant = video.Count > 1 && video.All(s =>
+        {
+            double k = (s.Time - video[0].Time) / frame;
+            return Math.Abs(k - Math.Round(k)) * frame <= 1;
+        });
+        int frames = (int)Math.Round(Length(video).Ticks / frame);
+        return new(Length(video), frames, (int)(size >> 32), (int)(size & 0xFFFFFFFF), constant, Length(audio));
     }
 
     static bool HasAudio(IMFSourceReader reader)
