@@ -275,7 +275,9 @@ public sealed class RecordingSession : IAsyncDisposable
             Quietly(() =>
             {
                 if (_finalW != null && _lastFinal != null)
-                    if (_finalNext < _written) _finalW.WriteFrame(_lastFinal, _finalNext, _written - _finalNext);
+                    // The last frame is its own sample, so the file length does not rely on the encoder keeping a long last duration.
+                    if (_finalNext < _written - 1) _finalW.WriteFrame(_lastFinal, _finalNext, _written - 1 - _finalNext);
+                    if (_finalNext < _written) _finalW.WriteFrame(_lastFinal, _written - 1);
             });
             DisposeAll();
             RecordingResult result;

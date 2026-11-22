@@ -204,7 +204,11 @@ public sealed class ScreenSource : IScreenSource
             BufferPrecision = CanvasBufferPrecision.Precision16Float,
         };
         using (var ds = result.CreateDrawingSession())
+        {
+            // Copy, not blend, because a reused target still holds the previous frame.
+            ds.Blend = CanvasBlend.Copy;
             ds.DrawImage(toSrgb, 0, 0, new Windows.Foundation.Rect(x, y, cw, ch));
+        }
         return result;
     }
 

@@ -130,7 +130,9 @@ public sealed class VideoFileWriter : IVideoWriter
         using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, copy, 0, false);
         using (var buffer2D = buffer.QueryInterface<IMF2DBuffer>()) buffer.CurrentLength = buffer2D.ContiguousLength;
         Interlocked.Increment(ref _behind);
-        Enqueue(_videoStream, buffer, frameIndex * TicksPerSecond / _frameRate, count * TicksPerSecond / _frameRate);
+        long time = frameIndex * TicksPerSecond / _frameRate;
+        // The duration runs to the next sample's start, so no gap opens between samples.
+        Enqueue(_videoStream, buffer, time, (frameIndex + count) * TicksPerSecond / _frameRate - time);
     }
 
     public void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex)

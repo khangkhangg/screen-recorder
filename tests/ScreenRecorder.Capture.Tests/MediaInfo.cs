@@ -18,6 +18,10 @@ public record MediaInfo(TimeSpan Duration, int FrameCount, int Width, int Height
         // Repeated frames are one longer sample, so frames are counted along the timeline and starts are checked against the frame grid.
         ulong rate = videoType.GetUInt64(MediaTypeAttributeKeys.FrameRate);
         double frame = 10_000_000.0 * (uint)rate / (rate >> 32);
+        // The MP4 stores times in units of about 167 ticks at 60 fps, so a 1 tick tolerance fails on good files.
+        for (int i = 1; i < video.Count; i++)
+            if (Math.Abs(video[i - 1].Time + video[i - 1].Duration - video[i].Time) > frame / 100)
+                throw new InvalidDataException($"{path}: video sample {i} starts at {video[i].Time}, not where sample {i - 1} ends.");
         bool constant = video.Count > 1 && video.All(s =>
         {
             double k = (s.Time - video[0].Time) / frame;

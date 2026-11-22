@@ -229,9 +229,16 @@ public class RecordingSessionTests
         var f = new TestFactory { Wrap = (name, w) => name == "final.mp4" ? final = new FakeWriter(w, behind: 100) : w };
         await using var s = await Start(Options(), f);
         await Task.Delay(1000);
-        await s.StopAsync();
+        var result = await s.StopAsync();
         // The slow writer leaves about 60 frames for Stop, which must not become 60 writes.
-        Assert.InRange(final!.Writes, 1, 5);
+        Assert.InRange(final!.Frames.Count, 1, 5);
+        long next = 0;
+        foreach (var (index, count) in final.Frames.OrderBy(w => w.Index))
+        {
+            Assert.Equal(next, index);
+            next += count;
+        }
+        Assert.Equal(MediaInfo.Read(Path.Combine(result.Folder, "screen.mp4")).FrameCount, next);
     }
 
     [Fact]
@@ -413,11 +420,11 @@ public class RecordingSessionTests
     {
         public long FramesBehind => behind >= 0 ? behind : inner.FramesBehind;
 
-        public int Writes;
+        public readonly List<(long Index, long Count)> Frames = [];
 
         public void WriteFrame(IDirect3DSurface surface, long frameIndex, long count = 1)
         {
-            Writes++;
+            Frames.Add((frameIndex, count));
             if (throwAt >= 0 && frameIndex + count > throwAt) throw new IOException("There is not enough space on the disk.");
             inner.WriteFrame(surface, frameIndex, count);
         }
