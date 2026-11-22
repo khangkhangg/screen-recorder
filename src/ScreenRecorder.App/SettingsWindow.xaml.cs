@@ -46,6 +46,8 @@ public sealed partial class SettingsWindow : Window
         ScreenshotHotkeyBox.Text = Keys(settings.ScreenshotHotkey);
         ShowHotkeyErrors(hotkeysOk);
         CountdownSwitch.IsOn = settings.Countdown;
+        ClickBox.ItemsSource = Enum.GetNames<ClickEffect>();
+        ClickBox.SelectedIndex = (int)settings.ClickEffect;
         ShowRate();
         Root.ActualThemeChanged += (_, _) => ShowRate();
         LoadDevices();
@@ -139,6 +141,8 @@ public sealed partial class SettingsWindow : Window
     static bool Down(VirtualKey k) => InputKeyboardSource.GetKeyStateForCurrentThread(k).HasFlag(CoreVirtualKeyStates.Down);
 
     void Countdown_Toggled(object sender, RoutedEventArgs e) => Save(settings with { Countdown = CountdownSwitch.IsOn });
+
+    void Click_Changed(object sender, SelectionChangedEventArgs e) => Save(settings with { ClickEffect = (ClickEffect)Math.Max(0, ClickBox.SelectedIndex) });
 
     void FrameRate_Click(object sender, RoutedEventArgs e)
     {

@@ -8,6 +8,10 @@ using Windows.UI;
 
 namespace ScreenRecorder.Capture;
 
+// The clicks to draw on one frame. X, Y and Pointer are in source pixels, Scale is pixels per DIP
+// on the captured monitor, Now and click Ticks come from Environment.TickCount64.
+public readonly record struct ClickLayer(ClickEffect Effect, ArraySegment<Click> Clicks, Vector2? Pointer, float Scale, long Now);
+
 // Returned surfaces stay valid until the next call of the same method, because each output reuses one render target.
 public sealed class Compositor : IDisposable
 {
@@ -29,17 +33,17 @@ public sealed class Compositor : IDisposable
         _final = new CanvasRenderTarget(device, frameSize.Width, frameSize.Height, 96);
     }
 
-    public IDirect3DSurface DrawScreen(CanvasBitmap screen)
+    public IDirect3DSurface DrawScreen(CanvasBitmap screen, ClickLayer clicks = default)
     {
         using var ds = _screen.CreateDrawingSession();
-        DrawLetterboxed(ds, screen, _screenSize);
+        DrawClicks(ds, DrawLetterboxed(ds, screen, _screenSize), screen.SizeInPixels.Width, clicks);
         return _screen;
     }
 
-    public IDirect3DSurface DrawFinal(CanvasBitmap screen, CanvasBitmap? camera, Layout layout)
+    public IDirect3DSurface DrawFinal(CanvasBitmap screen, CanvasBitmap? camera, Layout layout, ClickLayer clicks = default)
     {
         using var ds = _final.CreateDrawingSession();
-        DrawLetterboxed(ds, screen, _frameSize);
+        DrawClicks(ds, DrawLetterboxed(ds, screen, _frameSize), screen.SizeInPixels.Width, clicks);
         lock (_lock)
         {
             if (layout.Logo.Visible && _logo is not null)
@@ -84,11 +88,39 @@ public sealed class Compositor : IDisposable
         return error;
     }
 
-    static void DrawLetterboxed(CanvasDrawingSession ds, CanvasBitmap screen, PixelSize size)
+    static RectF DrawLetterboxed(CanvasDrawingSession ds, CanvasBitmap screen, PixelSize size)
     {
         ds.Clear(Color.FromArgb(255, 0, 0, 0));
         var r = FrameMath.Letterbox(new PixelSize((int)screen.SizeInPixels.Width, (int)screen.SizeInPixels.Height), size);
         ds.DrawImage(screen, new Rect(r.X, r.Y, r.Width, r.Height), screen.Bounds);
+        return r;
+    }
+
+    // `screenArea` is where the screen picture landed, so source pixels scale by its width.
+    static void DrawClicks(CanvasDrawingSession ds, RectF screenArea, uint sourceWidth, ClickLayer l)
+    {
+        if (l.Effect == ClickEffect.Off) return;
+        var k = screenArea.Width / sourceWidth;
+        var origin = new Vector2(screenArea.X, screenArea.Y);
+        Span<ClickShape> shapes = stackalloc ClickShape[2];
+        if (l.Effect == ClickEffect.Halo)
+        {
+            if (l.Pointer is not { } p) return;
+            var last = l.Clicks.Count > 0 ? l.Clicks[^1] : default;
+            ClickMath.Shapes(ClickEffect.Halo, last.Button, last.Ticks == 0 ? double.MaxValue : l.Now - last.Ticks, shapes);
+            DrawShape(ds, origin + p * k, shapes[0], l.Scale * k);
+            return;
+        }
+        foreach (var c in l.Clicks)
+            for (int i = 0, n = ClickMath.Shapes(l.Effect, c.Button, l.Now - c.Ticks, shapes); i < n; i++)
+                DrawShape(ds, origin + new Vector2(c.X, c.Y) * k, shapes[i], l.Scale * k);
+    }
+
+    static void DrawShape(CanvasDrawingSession ds, Vector2 at, ClickShape s, float scale)
+    {
+        var color = Color.FromArgb((byte)(s.Opacity * 255), (byte)(s.Color >> 16), (byte)(s.Color >> 8), (byte)s.Color);
+        if (s.Stroke == 0) ds.FillCircle(at, s.Radius * scale, color);
+        else ds.DrawCircle(at, s.Radius * scale, color, s.Stroke * scale);
     }
 
     public static void DrawCamera(CanvasDrawingSession ds, CanvasBitmap camera, RectF r, CameraShape shape)

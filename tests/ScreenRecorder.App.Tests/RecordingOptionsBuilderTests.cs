@@ -22,8 +22,8 @@ public class RecordingOptionsBuilderTests
     [Fact]
     public void Other_fields_come_from_settings()
     {
-        var s = Settings.Default with { OutputFolder = @"C:\out", FrameRate = 30, Mic = false, MicId = "mic", SystemAudio = false };
-        Assert.Equal(new RecordingOptions(Target, @"C:\out", 30, null, false, "mic", false, s.Layout, true),
+        var s = Settings.Default with { OutputFolder = @"C:\out", FrameRate = 30, Mic = false, MicId = "mic", SystemAudio = false, ClickEffect = ClickEffect.Halo };
+        Assert.Equal(new RecordingOptions(Target, @"C:\out", 30, null, false, "mic", false, s.Layout, true, ClickEffect.Halo),
             RecordingOptionsBuilder.Build(s, Target, null));
     }
 }

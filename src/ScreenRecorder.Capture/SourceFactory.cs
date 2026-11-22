@@ -34,8 +34,19 @@ internal interface IVideoWriter : IDisposable
     void WriteAudio(ReadOnlySpan<float> interleavedStereo48k, long firstSampleIndex);
 }
 
+// X and Y are desktop pixels, Ticks comes from Environment.TickCount64.
+public readonly record struct Click(int X, int Y, ClickButton Button, long Ticks);
+
+internal interface IClickSource : IDisposable
+{
+    (int X, int Y) Pointer { get; }
+    // Copies the clicks of the last second into `into`, oldest first, and returns how many.
+    int Read(Span<Click> into);
+}
+
 internal interface ISourceFactory
 {
+    IClickSource OpenClicks();
     IScreenSource OpenScreen(CaptureTarget target, CanvasDevice device);
     Task<IWebcamSource> OpenWebcamAsync(string id, CanvasDevice device);
     Task<IAudioSource> OpenMicAsync(string? id);
@@ -46,6 +57,7 @@ internal interface ISourceFactory
 internal sealed class SourceFactory : ISourceFactory
 {
     public static readonly SourceFactory Instance = new();
+    public IClickSource OpenClicks() => new ClickHook();
     public IScreenSource OpenScreen(CaptureTarget target, CanvasDevice device) => ScreenSource.Create(target, device);
     public async Task<IWebcamSource> OpenWebcamAsync(string id, CanvasDevice device) => await WebcamSource.OpenAsync(id, device);
     public async Task<IAudioSource> OpenMicAsync(string? id) => await AudioSource.OpenMicAsync(id);

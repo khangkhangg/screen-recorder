@@ -36,6 +36,41 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Only_clicks_inside_the_area_and_outside_a_pause_are_drawn()
+    {
+        var clicks = new FakeClicks();
+        var s = await Start(Options() with { ClickEffect = ClickEffect.Ring }, new TestFactory { Screen = () => new FakeScreen(), Clicks = clicks });
+        await using (s)
+        {
+            var a = NativeMethods.DesktopRect(new MonitorTarget(CaptureTarget.PrimaryMonitor()))!.Value;
+            var buffer = new Click[32];
+            clicks.Add(a.Left + 10, a.Top + 20);
+            clicks.Add(a.Right + 10, a.Top + 20);
+            clicks.Pointer = (a.Right + 10, a.Top);
+            var layer = s.Clicks(buffer);
+            Assert.Equal(new Click(10, 20, ClickButton.Left, clicks.List[0].Ticks), layer.Clicks.Single());
+            Assert.Null(layer.Pointer);
+
+            s.Pause();
+            lock (clicks.List) clicks.List.Clear();
+            clicks.Add(a.Left + 10, a.Top + 20);
+            await Task.Delay(50);
+            s.Resume();
+            Assert.Equal(0, s.Clicks(buffer).Clicks.Count);
+            await s.StopAsync();
+        }
+        Assert.True(clicks.Disposed);
+    }
+
+    [Fact]
+    public async Task Click_effect_off_opens_no_hook()
+    {
+        var f = new TestFactory { Screen = () => new FakeScreen(), Clicks = new FakeClicks() };
+        await using var s = await Start(Options(), f);
+        Assert.False(f.ClicksOpened);
+    }
+
+    [Fact]
     public async Task Pause_is_cut_from_every_file()
     {
         await using var s = await Start(Options());
@@ -353,6 +388,9 @@ public class RecordingSessionTests
         public IWebcamSource? Webcam;
         public IAudioSource? Mic;
         public Func<string, IVideoWriter, IVideoWriter> Wrap = (_, w) => w;
+        public IClickSource? Clicks;
+        public bool ClicksOpened;
+        public IClickSource OpenClicks() { ClicksOpened = true; return Clicks ?? SourceFactory.Instance.OpenClicks(); }
 
         public IScreenSource OpenScreen(CaptureTarget t, CanvasDevice d) => Screen?.Invoke() ?? SourceFactory.Instance.OpenScreen(t, d);
         public Task<IWebcamSource> OpenWebcamAsync(string id, CanvasDevice d) =>
@@ -386,6 +424,16 @@ public class RecordingSessionTests
         }
 
         public void Dispose() => _frame?.Dispose();
+    }
+
+    sealed class FakeClicks : IClickSource
+    {
+        public readonly List<Click> List = [];
+        public bool Disposed;
+        public (int X, int Y) Pointer { get; set; }
+        public int Read(Span<Click> into) { lock (List) { List.CopyTo(into); return List.Count; } }
+        public void Add(int x, int y) { lock (List) List.Add(new(x, y, ClickButton.Left, Environment.TickCount64)); }
+        public void Dispose() => Disposed = true;
     }
 
     sealed class FakeWebcam : IWebcamSource

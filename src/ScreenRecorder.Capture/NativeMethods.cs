@@ -27,6 +27,44 @@ static class NativeMethods
     }
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out Rect value, int size);
 
+    // The captured area in desktop pixels.
+    public static Rect? DesktopRect(CaptureTarget target)
+    {
+        if (target is WindowTarget w) return WindowRect(w.Hwnd);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfoW(target is RegionTarget r ? r.Hmonitor : ((MonitorTarget)target).Hmonitor, ref info)) return null;
+        var m = info.Monitor;
+        return target is RegionTarget g
+            ? new Rect { Left = m.Left + g.X, Top = m.Top + g.Y, Right = m.Left + g.X + g.Width, Bottom = m.Top + g.Y + g.Height }
+            : m;
+    }
+
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(nint monitor, int type, out uint dpiX, out uint dpiY);
+
+    // Pixels per DIP on the captured monitor.
+    public static float DipScale(CaptureTarget target)
+    {
+        var monitor = target switch
+        {
+            MonitorTarget m => m.Hmonitor,
+            RegionTarget r => r.Hmonitor,
+            WindowTarget w => MonitorFromWindow(w.Hwnd, MONITOR_DEFAULTTONEAREST),
+            _ => 0,
+        };
+        return GetDpiForMonitor(monitor, 0, out var dpi, out _) == 0 ? dpi / 96f : 1;
+    }
+
+    public delegate nint HookProc(int code, nint message, nint info);
+    [DllImport("user32.dll", SetLastError = true)] public static extern nint SetWindowsHookExW(int id, HookProc proc, nint module, uint threadId);
+    [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(nint hook);
+    [DllImport("user32.dll")] public static extern nint CallNextHookEx(nint hook, int code, nint message, nint info);
+    [DllImport("user32.dll")] public static extern int GetMessageW(out Msg msg, nint hwnd, uint min, uint max);
+    [DllImport("user32.dll")] public static extern bool PostThreadMessageW(uint threadId, uint message, nint w, nint l);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("kernel32.dll")] public static extern nint GetModuleHandleW(string? name);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    public struct Msg { public nint Hwnd; public uint Message; public nint W, L; public uint Time; public Point Pt; public uint Private; }
+
     // The visible window bounds, without the invisible resize border that GetWindowRect includes.
     public static Rect? WindowRect(nint hwnd) =>
         DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out var r, Marshal.SizeOf<Rect>()) == 0 ? r : null;

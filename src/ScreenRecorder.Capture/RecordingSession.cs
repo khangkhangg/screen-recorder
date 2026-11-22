@@ -7,7 +7,7 @@ using static System.FormattableString;
 
 namespace ScreenRecorder.Capture;
 
-public record RecordingOptions(CaptureTarget Target, string OutputRoot, int FrameRate, string? WebcamId, bool Mic, string? MicId, bool SystemAudio, Layout Layout, bool WriteFinal);
+public record RecordingOptions(CaptureTarget Target, string OutputRoot, int FrameRate, string? WebcamId, bool Mic, string? MicId, bool SystemAudio, Layout Layout, bool WriteFinal, ClickEffect ClickEffect = ClickEffect.Off);
 
 public record RecordingResult(string Folder, long DroppedFrames, IReadOnlyList<string> Notes);
 
@@ -46,6 +46,10 @@ public sealed class RecordingSession : IAsyncDisposable
     IScreenSource? _screen;
     IWebcamSource? _cam;
     Compositor? _compositor;
+    IClickSource? _clicks;
+    readonly Click[] _clickBuffer = new Click[32];
+    float _dipScale = 1;
+    long _clickFloor; // clicks before the last resume belong to the pause
     IVideoWriter? _screenW, _finalW, _camW;
     CanvasRenderTarget? _black, _camTarget;
     CanvasBitmap? _lastScreen, _lastCam;
@@ -126,6 +130,7 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             if (_ended || _stopRequested || _closed) return;
             _clock.Resume();
+            _clickFloor = Environment.TickCount64;
             WriteSession();
         }
     }
@@ -176,6 +181,12 @@ public sealed class RecordingSession : IAsyncDisposable
 
         _compositor = new Compositor(device, _size, _screenSize);
         if (_compositor.SetLogo(_o.Layout.Logo.Path) is { } error) _notes.Add(error);
+        if (_o.ClickEffect != ClickEffect.Off)
+        {
+            _dipScale = NativeMethods.DipScale(_o.Target);
+            try { _clicks = f.OpenClicks(); }
+            catch (Exception e) { _notes.Add($"click effects could not start: {e.Message}"); }
+        }
         _black = new CanvasRenderTarget(device, _size.Width, _size.Height, 96);
         using (var ds = _black.CreateDrawingSession()) ds.Clear(Windows.UI.Color.FromArgb(255, 0, 0, 0));
         _lastScreen = _black;
@@ -332,7 +343,8 @@ public sealed class RecordingSession : IAsyncDisposable
         if (!_screen!.IsMinimized && _screen.TryGetLatestFrame(out var frame)) _lastScreen = frame;
         if (_cam != null && _cam.TryGetLatestFrame(out var camera)) _lastCam = camera;
 
-        var screen = _compositor!.DrawScreen(_lastScreen!);
+        var clicks = Clicks(_clickBuffer);
+        var screen = _compositor!.DrawScreen(_lastScreen!, clicks);
         if (due > _written) _screenW!.WriteFrame(screen, _written, due - _written);
         _written = due;
         if (_finalW is null) return;
@@ -344,13 +356,27 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             // Skipped indexes get the previous final frame as one long sample, so final.mp4 has no gaps.
             if (_finalNext < first) _finalW.WriteFrame(_lastFinal!, _finalNext, first - _finalNext);
-            _lastFinal = _compositor.DrawFinal(_lastScreen!, _lastCam, _layout);
+            _lastFinal = _compositor.DrawFinal(_lastScreen!, _lastCam, _layout, clicks);
             _finalW.WriteFrame(_lastFinal, first, due - first);
             _finalNext = due;
             skipped = 0;
         }
         _dropped += skipped;
     }
+
+    // The clicks to draw now, moved into source pixels. Clicks outside the captured area and
+    // clicks from before the last resume are left out. `buffer` holds the result.
+    internal ClickLayer Clicks(Click[] buffer)
+    {
+        if (_clicks is null || NativeMethods.DesktopRect(_o.Target) is not { } a) return default;
+        int n = 0;
+        foreach (var c in buffer.AsSpan(0, _clicks.Read(buffer)))
+            if (c.Ticks >= _clickFloor && Inside(a, c.X, c.Y)) buffer[n++] = c with { X = c.X - a.Left, Y = c.Y - a.Top };
+        var (x, y) = _clicks.Pointer;
+        return new(_o.ClickEffect, new(buffer, 0, n), Inside(a, x, y) ? new(x - a.Left, y - a.Top) : null, _dipScale, Environment.TickCount64);
+    }
+
+    static bool Inside(NativeMethods.Rect a, int x, int y) => x >= a.Left && x < a.Right && y >= a.Top && y < a.Bottom;
 
     void WaitWhileBehind(IVideoWriter? w)
     {
@@ -431,6 +457,7 @@ public sealed class RecordingSession : IAsyncDisposable
         Quietly(() => _cam?.DisposeAsync().AsTask().Wait());
         Quietly(() => _screen?.Dispose());
         Quietly(() => _compositor?.Dispose());
+        Quietly(() => _clicks?.Dispose());
         _black?.Dispose();
         _camTarget?.Dispose();
     }

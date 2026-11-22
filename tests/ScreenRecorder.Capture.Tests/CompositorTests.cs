@@ -89,6 +89,23 @@ public sealed class CompositorTests : IDisposable
     }
 
     [Fact]
+    public void Click_is_drawn_on_both_outputs()
+    {
+        var now = Environment.TickCount64;
+        // A dot at 120 ms is radius 15 at opacity 0.75: amber over blue.
+        var layer = new ClickLayer(ClickEffect.Dot, new([new Click(960, 540, ClickButton.Left, now - 120)]), null, 1, now);
+        var mix = Color.FromArgb(255, 179, 119, 93);
+        AssertColor(mix, Pixel(_c.DrawScreen(_blue, layer), 960, 540));
+        AssertColor(Blue, Pixel(_c.DrawScreen(_blue, layer), 960, 560));
+        AssertColor(mix, Pixel(_c.DrawFinal(_blue, null, Layout.Default, layer), 960, 540));
+        AssertColor(Blue, Pixel(_c.DrawScreen(_blue, layer with { Now = now + 400 }), 960, 540));
+    }
+
+    [Fact]
+    public void Halo_without_pointer_is_not_drawn() =>
+        AssertColor(Blue, Pixel(_c.DrawScreen(_blue, new ClickLayer(ClickEffect.Halo, new([]), null, 1, 0)), 960, 540));
+
+    [Fact]
     public void Logo_is_drawn_in_its_corner()
     {
         var path = Png(400, 200);

@@ -7,7 +7,7 @@ public record SavedRegion(string Monitor, int X, int Y, int Width, int Height);
 
 public record Settings(string OutputFolder, Hotkey RecordHotkey, Hotkey ScreenshotHotkey, bool Countdown, int FrameRate,
     string? WebcamId, string? MicId, bool Mic, bool SystemAudio, Layout Layout,
-    SavedRegion? Region = null, bool Mini = false)
+    SavedRegion? Region = null, bool Mini = false, ClickEffect ClickEffect = ClickEffect.Off)
 {
     public static Settings Default { get; } = new(
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "ScreenRecorder"),

@@ -70,7 +70,16 @@
                               Toggled="Countdown_Toggled" AutomationProperties.Name="Countdown before recording" />
             </Grid>
 
-            <TextBlock Text="Devices" Style="{StaticResource Heading}" />
+            <Grid Style="{StaticResource Row}">
+            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="Click effect" />
+                <TextBlock Text="Marks mouse clicks in the video" Style="{StaticResource Helper}" />
+            </StackPanel>
+            <ComboBox x:Name="ClickBox" Grid.Column="1" Width="220" SelectionChanged="Click_Changed" AutomationProperties.Name="Click effect" />
+        </Grid>
+
+        <TextBlock Text="Devices" Style="{StaticResource Heading}" />
             <Grid Style="{StaticResource Row}">
                 <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <TextBlock Text="Camera" VerticalAlignment="Center" />
