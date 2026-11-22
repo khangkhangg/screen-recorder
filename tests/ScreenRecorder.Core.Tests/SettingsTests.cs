@@ -44,6 +44,20 @@ public class SettingsTests
         Assert.Null(Settings.Load(path).Region);
     }
 
+    [Theory]
+    [InlineData("\"Sparkle\"")]
+    [InlineData("99")]
+    public void Unknown_click_effect_loads_as_off_and_keeps_the_rest(string value)
+    {
+        var path = Path.GetTempFileName();
+        var old = Settings.Default with { FrameRate = 30, ClickEffect = ClickEffect.Ring };
+        old.Save(path);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        json["clickEffect"] = System.Text.Json.Nodes.JsonNode.Parse(value);
+        File.WriteAllText(path, json.ToJsonString());
+        Assert.Equivalent(old with { ClickEffect = ClickEffect.Off }, Settings.Load(path));
+    }
+
     [Fact]
     public void Empty_layout_gives_default()
     {

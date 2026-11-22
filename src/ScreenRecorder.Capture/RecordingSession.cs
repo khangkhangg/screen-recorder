@@ -120,6 +120,7 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             if (_ended) return;
             _clock.Pause();
+            if (_clicks != null) _clicks.Paused = true;
             WriteSession();
         }
     }
@@ -129,8 +130,9 @@ public sealed class RecordingSession : IAsyncDisposable
         lock (_gate)
         {
             if (_ended || _stopRequested || _closed) return;
-            _clock.Resume();
             _clickFloor = Environment.TickCount64;
+            if (_clicks != null) _clicks.Paused = false;
+            _clock.Resume();
             WriteSession();
         }
     }

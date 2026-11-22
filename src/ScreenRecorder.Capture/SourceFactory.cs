@@ -40,6 +40,7 @@ public readonly record struct Click(int X, int Y, ClickButton Button, long Ticks
 internal interface IClickSource : IDisposable
 {
     (int X, int Y) Pointer { get; }
+    bool Paused { set; }
     // Copies the clicks of the last second into `into`, oldest first, and returns how many.
     int Read(Span<Click> into);
 }

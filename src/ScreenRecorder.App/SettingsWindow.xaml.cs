@@ -47,7 +47,7 @@ public sealed partial class SettingsWindow : Window
         ShowHotkeyErrors(hotkeysOk);
         CountdownSwitch.IsOn = settings.Countdown;
         ClickBox.ItemsSource = Enum.GetNames<ClickEffect>();
-        ClickBox.SelectedIndex = (int)settings.ClickEffect;
+        ClickBox.SelectedIndex = Enum.IsDefined(settings.ClickEffect) ? (int)settings.ClickEffect : 0;
         ShowRate();
         Root.ActualThemeChanged += (_, _) => ShowRate();
         LoadDevices();

@@ -52,10 +52,12 @@ public class RecordingSessionTests
             Assert.Null(layer.Pointer);
 
             s.Pause();
+            Assert.True(clicks.Paused);
             lock (clicks.List) clicks.List.Clear();
             clicks.Add(a.Left + 10, a.Top + 20);
             await Task.Delay(50);
             s.Resume();
+            Assert.False(clicks.Paused);
             Assert.Equal(0, s.Clicks(buffer).Clicks.Count);
             await s.StopAsync();
         }
@@ -431,6 +433,7 @@ public class RecordingSessionTests
         public readonly List<Click> List = [];
         public bool Disposed;
         public (int X, int Y) Pointer { get; set; }
+        public bool Paused { get; set; }
         public int Read(Span<Click> into) { lock (List) { List.CopyTo(into); return List.Count; } }
         public void Add(int x, int y) { lock (List) List.Add(new(x, y, ClickButton.Left, Environment.TickCount64)); }
         public void Dispose() => Disposed = true;

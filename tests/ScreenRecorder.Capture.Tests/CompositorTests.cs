@@ -102,6 +102,18 @@ public sealed class CompositorTests : IDisposable
     }
 
     [Fact]
+    public void Halo_follows_the_pointer_and_brightens_on_a_click()
+    {
+        var now = Environment.TickCount64;
+        // Amber at opacity 0.25 at rest and 0.6 at 120 ms, over blue.
+        var rest = new ClickLayer(ClickEffect.Halo, new([]), new(500, 300), 1, now);
+        AssertColor(Color.FromArgb(255, 60, 40, 201), Pixel(_c.DrawScreen(_blue, rest), 500, 300));
+        AssertColor(Blue, Pixel(_c.DrawScreen(_blue, rest), 500, 330));
+        var click = rest with { Clicks = new([new Click(0, 0, ClickButton.Left, now - 120)]) };
+        AssertColor(Color.FromArgb(255, 143, 95, 125), Pixel(_c.DrawScreen(_blue, click), 500, 300));
+    }
+
+    [Fact]
     public void Halo_without_pointer_is_not_drawn() =>
         AssertColor(Blue, Pixel(_c.DrawScreen(_blue, new ClickLayer(ClickEffect.Halo, new([]), null, 1, 0)), 960, 540));
 
