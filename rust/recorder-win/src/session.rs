@@ -75,6 +75,8 @@ pub struct RecordingResult {
     pub frame_rate: i32,
     pub frame_size: PixelSize,
     pub screen_file_size: PixelSize,
+    /// Stop phase times and tick counts, for tracing only.
+    pub diagnostics: Vec<String>,
 }
 
 /// The notes for a result the recording thread never gave: the session's notes, then why.
@@ -97,6 +99,7 @@ fn recording_result(folder: &Path, file: &SessionFile, files: Vec<String>, notes
         frame_rate: file.frame_rate,
         frame_size: file.frame_size,
         screen_file_size,
+        diagnostics: Vec::new(),
     }
 }
 
@@ -368,6 +371,8 @@ struct Recorder {
     final_next: i64,
     cam_written: i64,
     samples: i64,
+    late_ticks: u32,
+    longest_tick: Duration,
     /// Mixed sound that final.mp4 has not been given yet, starting at sample `final_sound_at`.
     final_sound: Vec<f32>,
     final_sound_at: i64,
@@ -501,6 +506,8 @@ impl Recorder {
             final_next: 0,
             cam_written: 0,
             samples: 0,
+            late_ticks: 0,
+            longest_tick: Duration::ZERO,
             final_sound: Vec::new(),
             final_sound_at: 0,
             behind_noted: false,
@@ -562,7 +569,9 @@ impl Recorder {
                 // Freezing the clock lets the last tick bring every file to the same end time.
                 self.clock.pause();
             }
+            let started = Instant::now();
             self.tick(stop)?;
+            self.longest_tick = self.longest_tick.max(started.elapsed());
             if stop {
                 return Ok(());
             }
@@ -666,6 +675,7 @@ impl Recorder {
         // A hardware encoder holds the shared device lock, so write_frame itself can be slow before frames_behind
         // grows. A late loop skips final.mp4 too, which keeps screen.mp4 on time.
         let late = due - first > 2;
+        self.late_ticks += u32::from(late);
         let mut skipped = due - first;
         if self.last_final.is_none() || (!late && w.frames_behind() <= FINAL_MAX_BEHIND) {
             // Skipped indexes get the previous final frame, at most 2 per tick, so final.mp4 keeps a constant frame rate.
@@ -791,6 +801,12 @@ impl Recorder {
 impl Drop for Recorder {
     fn drop(&mut self) {
         self.shared.state().ended = true;
+        let mut diagnostics = vec![format!(
+            "late ticks {}, longest tick {} ms",
+            self.late_ticks,
+            self.longest_tick.as_millis()
+        )];
+        let mut at = Instant::now();
         let deadline = Instant::now() + CATCH_UP_LIMIT;
         let mut r = Ok(());
         if let (Some(w), Some(last)) = (self.final_w.as_mut(), self.last_final.as_ref()) {
@@ -811,28 +827,48 @@ impl Drop for Recorder {
             self.note(format!("final.mp4 is {short} frames short"));
         }
         self.quietly(r);
+        lap(&mut diagnostics, &mut at, "catch-up");
         let r = self.feed_final_sound(short <= 0);
         self.quietly(r);
-        for mut w in [self.screen_w.take(), self.final_w.take(), self.cam_w.take()].into_iter().flatten() {
+        lap(&mut diagnostics, &mut at, "final sound");
+        let writers = [
+            ("screen.mp4", self.screen_w.take()),
+            ("final.mp4", self.final_w.take()),
+            ("webcam.mp4", self.cam_w.take()),
+        ];
+        for (name, w) in writers {
+            let Some(mut w) = w else { continue };
             let r = w.finish();
             self.quietly(r);
+            lap(&mut diagnostics, &mut at, name);
         }
         for i in 0..self.tracks.len() {
+            let name = self.tracks[i].name;
             self.tracks[i].source = None;
+            lap(&mut diagnostics, &mut at, &format!("{name} source"));
             if let Some(mut wav) = self.tracks[i].wav.take() {
                 let r = wav.finish();
                 self.quietly(r);
+                lap(&mut diagnostics, &mut at, &format!("{name} wav"));
             }
         }
         self.cam = None;
         let folder = &self.shared.folder;
         let s = self.shared.state();
         let files = s.file.sources.iter().map(|e| e.file.clone()).filter(|f| folder.join(f).exists()).collect();
-        let result = recording_result(folder, &s.file, files, s.file.notes.clone());
+        let mut result = recording_result(folder, &s.file, files, s.file.notes.clone());
         self.shared.save(s, &self.clock);
+        lap(&mut diagnostics, &mut at, "session.json");
+        result.diagnostics = diagnostics;
         *lock(&self.shared.result) = Some(result);
         self.shared.done.notify_all();
     }
+}
+
+/// Adds how long the phase since `at` took, then starts the next phase.
+fn lap(diagnostics: &mut Vec<String>, at: &mut Instant, phase: &str) {
+    diagnostics.push(format!("{phase} {} ms", at.elapsed().as_millis()));
+    *at = Instant::now();
 }
 
 fn check_frame_rate(rate: i32) -> Result<()> {

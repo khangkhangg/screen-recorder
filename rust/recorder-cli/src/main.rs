@@ -268,7 +268,13 @@ fn record(a: RecordArgs) -> Result<(), Failure> {
     }
 
     let seconds = session.elapsed().as_secs_f64();
-    print(&outcome(&session.stop(), seconds, &notes)?);
+    let result = session.stop();
+    if std::env::var_os("SCREENREC_TRACE").is_some() {
+        for d in &result.diagnostics {
+            say(d);
+        }
+    }
+    print(&outcome(&result, seconds, &notes)?);
     Ok(())
 }
 
@@ -323,6 +329,7 @@ mod tests {
             dropped_frames: 0,
             notes: notes.iter().map(|n| n.to_string()).collect(),
             frame_rate: 60,
+            diagnostics: Vec::new(),
             frame_size: size,
             screen_file_size: size,
         }

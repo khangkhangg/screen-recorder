@@ -63,7 +63,9 @@ fn start(o: &RecordingOptions, f: FakeFactory) -> RecordingSession {
 /// Fails the test instead of hanging when stop does not return in time.
 fn stop_within(s: RecordingSession, limit: Duration) -> RecordingResult {
     let (done, stopped) = mpsc::channel();
-    thread::spawn(move || done.send(s.stop()));
+    thread::spawn(move || {
+        let _ = done.send(s.stop());
+    });
     stopped.recv_timeout(limit).expect("stop did not return in time")
 }
 
@@ -97,7 +99,12 @@ fn two_second_recording_makes_aligned_files() {
     let (o, _root) = options();
     let s = start(&o, FakeFactory::default());
     wait(2000);
-    let folder = stop(s).folder;
+    let r = stop(s);
+    let phases = ["late ticks", "catch-up", "final.mp4 ", "session.json "];
+    for p in phases {
+        assert!(r.diagnostics.iter().any(|d| d.starts_with(p)), "{p}: {:?}", r.diagnostics);
+    }
+    let folder = r.folder;
     assert!(folder.join("final.mp4").exists());
     assert!(folder.join("screen.mp4").exists());
     assert!(!folder.join("webcam.mp4").exists());
