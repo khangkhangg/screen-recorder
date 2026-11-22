@@ -126,6 +126,7 @@ public sealed partial class BarWindow
     async Task StopRecording()
     {
         var s = session!;
+        var length = s.Elapsed;
         busy = true;
         clock.Stop();
         SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
@@ -142,9 +143,10 @@ public sealed partial class BarWindow
         }
         finally { session = null; busy = false; SetState(state); }
         var lines = result.Notes.Where(IsShownNote).ToList();
-        if (result.DroppedFrames > 0) lines.Insert(0, $"Dropped frames in the finished video: {result.DroppedFrames}");
         if (lines.Count > 0) Warn(string.Join("\n", lines), "Recording");
-        System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\"");
+        var file = new[] { "final.mp4", "screen.mp4" }.Select(n => Path.Combine(result.Folder, n)).FirstOrDefault(File.Exists);
+        if (file is null) System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\""); // nothing to play, so show the folder
+        else card.ShowRecording(file, result.Folder, CardMath.RecordingStatus(length, result.DroppedFrames));
     }
 
 

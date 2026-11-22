@@ -17,7 +17,7 @@
             </Style>
         </Border.Resources>
         <StackPanel Spacing="8">
-            <Grid Width="280" Height="150" CornerRadius="8" Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+            <Grid Width="400" Height="150" CornerRadius="8" Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
                 <Image x:Name="Thumb" Stretch="Fill" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 <Button HorizontalAlignment="Right" VerticalAlignment="Top" Margin="4" Width="28" Height="28" Padding="0" CornerRadius="6"
                         Click="Close_Click" ToolTipService.ToolTip="Close" AutomationProperties.Name="Close">
@@ -30,21 +30,27 @@
             </StackPanel>
             <Grid ColumnSpacing="4">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition />
+                    <ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /><ColumnDefinition x:Name="CropColumn" /><ColumnDefinition x:Name="DeleteColumn" />
                 </Grid.ColumnDefinitions>
                 <Button Grid.Column="0" Style="{StaticResource Action}" Click="Open_Click" ToolTipService.ToolTip="Open in the default app" AutomationProperties.Name="Open">
-                    <StackPanel Spacing="4"><FontIcon Glyph="&#xE8A7;" FontSize="16" /><TextBlock Text="Open" Style="{StaticResource Label}" /></StackPanel>
+                    <StackPanel Spacing="4"><FontIcon x:Name="OpenIcon" Glyph="&#xE8A7;" FontSize="16" /><FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="16" Visibility="Collapsed" /><TextBlock x:Name="OpenText" Text="Open" Style="{StaticResource Label}" /></StackPanel>
                 </Button>
-                <Button Grid.Column="1" Style="{StaticResource Action}" Click="Copy_Click" ToolTipService.ToolTip="Copy the picture" AutomationProperties.Name="Copy">
+                <Button Grid.Column="1" Style="{StaticResource Action}" Click="OpenWith_Click" ToolTipService.ToolTip="Choose the app to open it with" AutomationProperties.Name="Open with">
+                    <StackPanel Spacing="4"><FontIcon Glyph="&#xE7AC;" FontSize="16" /><TextBlock Text="Open with" Style="{StaticResource Label}" /></StackPanel>
+                </Button>
+                <Button x:Name="FolderButton" Grid.Column="2" Style="{StaticResource Action}" Click="Folder_Click" Visibility="Collapsed" ToolTipService.ToolTip="Open the recording folder" AutomationProperties.Name="Folder">
+                    <StackPanel Spacing="4"><FontIcon Glyph="&#xE8B7;" FontSize="16" /><TextBlock Text="Folder" Style="{StaticResource Label}" /></StackPanel>
+                </Button>
+                <Button x:Name="CopyButton" Grid.Column="2" Style="{StaticResource Action}" Click="Copy_Click" ToolTipService.ToolTip="Copy the picture" AutomationProperties.Name="Copy">
                     <StackPanel Spacing="4"><FontIcon Glyph="&#xE8C8;" FontSize="16" /><TextBlock Text="Copy" Style="{StaticResource Label}" /></StackPanel>
                 </Button>
-                <Button Grid.Column="2" Style="{StaticResource Action}" Click="Share_Click" ToolTipService.ToolTip="Share the picture" AutomationProperties.Name="Share">
+                <Button Grid.Column="3" Style="{StaticResource Action}" Click="Share_Click" ToolTipService.ToolTip="Share the picture" AutomationProperties.Name="Share">
                     <StackPanel Spacing="4"><FontIcon Glyph="&#xE72D;" FontSize="16" /><TextBlock Text="Share" Style="{StaticResource Label}" /></StackPanel>
                 </Button>
-                <Button Grid.Column="3" Style="{StaticResource Action}" Click="Crop_Click" ToolTipService.ToolTip="Crop and save a copy" AutomationProperties.Name="Crop">
+                <Button x:Name="CropButton" Grid.Column="4" Style="{StaticResource Action}" Click="Crop_Click" ToolTipService.ToolTip="Crop and save a copy" AutomationProperties.Name="Crop">
                     <StackPanel Spacing="4"><FontIcon Glyph="&#xE7A8;" FontSize="16" /><TextBlock Text="Crop" Style="{StaticResource Label}" /></StackPanel>
                 </Button>
-                <Button Grid.Column="4" Style="{StaticResource Action}" Click="Delete_Click" ToolTipService.ToolTip="Move to the Recycle Bin" AutomationProperties.Name="Delete">
+                <Button x:Name="DeleteButton" Grid.Column="5" Style="{StaticResource Action}" Click="Delete_Click" ToolTipService.ToolTip="Move to the Recycle Bin" AutomationProperties.Name="Delete">
                     <StackPanel Spacing="4"><FontIcon Glyph="&#xE74D;" FontSize="16" /><TextBlock Text="Delete" Style="{StaticResource Label}" /></StackPanel>
                 </Button>
             </Grid>

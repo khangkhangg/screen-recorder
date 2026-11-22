@@ -18,12 +18,12 @@ namespace ScreenRecorder.App;
 // The card that appears after a screenshot, with open, copy, share, crop and delete.
 public sealed partial class ScreenshotCard : Window
 {
-    const int CardWidth = 300, CardHeight = 258, Margin = 16;
+    const int CardWidth = 420, CardHeight = 258, Margin = 16;
     readonly nint hwnd;
     readonly DispatcherQueueTimer life, copiedTimer, shareTimer;
     readonly List<CropWindow> crops = [];
     readonly SharePanel share;
-    string path = "";
+    string path = "", folder = "";
     bool copied, hover, active, sharing;
     long sharedAt;
     int dismissals;
@@ -88,11 +88,12 @@ public sealed partial class ScreenshotCard : Window
         var scale = NativeMethods.MonitorScale(Win32Interop.GetMonitorFromDisplayId(area.DisplayId));
         try
         {
-            var picture = await LoadPicture(path, 280, 150, scale);
+            var picture = await LoadPicture(path, 400, 150, scale);
             if (run != shows) return;
             (this.path, this.copied, width, height) = (path, copied, picture.Width, picture.Height);
             Thumb.Source = picture.Image;
             (Thumb.Width, Thumb.Height) = picture.Fit;
+            SetMode(video: false);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or COMException)
         {
@@ -101,6 +102,44 @@ public sealed partial class ScreenshotCard : Window
         }
         copiedTimer.Stop();
         StatusText.Text = CardMath.StatusText(copied, width, height);
+        Place(area, scale);
+    }
+
+    // The card for a finished recording: play, open with, folder and share.
+    public async void ShowRecording(string file, string recordingFolder, string status)
+    {
+        var run = ++shows;
+        BitmapImage? image = null;
+        try
+        {
+            var item = await StorageFile.GetFileFromPathAsync(file);
+            using var thumb = await item.GetThumbnailAsync(Windows.Storage.FileProperties.ThumbnailMode.SingleItem, 400);
+            if (thumb is not null) { image = new BitmapImage(); await image.SetSourceAsync(thumb); }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or COMException) { Debug.WriteLine(e); } // the card works without a picture
+        if (run != shows) return;
+        (path, folder) = (file, recordingFolder);
+        Thumb.Source = image;
+        (Thumb.Width, Thumb.Height) = (400, 150);
+        SetMode(video: true);
+        copiedTimer.Stop();
+        StatusText.Text = status;
+        var area = DisplayArea.Primary;
+        Place(area, NativeMethods.MonitorScale(Win32Interop.GetMonitorFromDisplayId(area.DisplayId)));
+    }
+
+    void SetMode(bool video)
+    {
+        Thumb.Stretch = video ? Microsoft.UI.Xaml.Media.Stretch.Uniform : Microsoft.UI.Xaml.Media.Stretch.Fill;
+        OpenText.Text = video ? "Play" : "Open";
+        PlayIcon.Visibility = FolderButton.Visibility = video ? Visibility.Visible : Visibility.Collapsed;
+        OpenIcon.Visibility = CopyButton.Visibility = CropButton.Visibility = DeleteButton.Visibility = video ? Visibility.Collapsed : Visibility.Visible;
+        CropColumn.Width = DeleteColumn.Width = video ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        life.Interval = TimeSpan.FromSeconds(video ? 15 : 8); // a recording has no other notice, so its card stays longer
+    }
+
+    void Place(DisplayArea area, double scale)
+    {
         AppWindow.ResizeClient(new SizeInt32((int)Math.Ceiling(CardWidth * scale), (int)Math.Ceiling(CardHeight * scale)));
         var margin = (int)Math.Round(Margin * scale);
         var rect = CardMath.CardRect(area.WorkArea, AppWindow.Size.Width, AppWindow.Size.Height, margin);
@@ -158,7 +197,23 @@ public sealed partial class ScreenshotCard : Window
         try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
         catch (Exception ex) when (ex is Win32Exception or IOException)
         {
-            NativeMethods.ShowWarning(hwnd, "The screenshot could not be opened.", "Screenshot");
+            NativeMethods.ShowWarning(hwnd, "The file could not be opened.", "Screen Recorder");
+            return;
+        }
+        Hide();
+    }
+
+    // The Windows "Open with" window, so the user picks the app.
+    void OpenWith_Click(object sender, RoutedEventArgs e) => Start("rundll32.exe", $"shell32.dll,OpenAs_RunDLL {path}");
+
+    void Folder_Click(object sender, RoutedEventArgs e) => Start("explorer.exe", $"\"{folder}\"");
+
+    void Start(string program, string arguments)
+    {
+        try { Process.Start(program, arguments); }
+        catch (Exception ex) when (ex is Win32Exception or IOException)
+        {
+            NativeMethods.ShowWarning(hwnd, "The file could not be opened.", "Screen Recorder");
             return;
         }
         Hide();

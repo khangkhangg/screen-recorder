@@ -25,6 +25,13 @@ public class ScreenshotCardTests
     public void Status_text(bool copied, string text) => Assert.Equal(text, CardMath.StatusText(copied, 1280, 720));
 
     [Theory]
+    [InlineData(13, 0, "Recording saved · 0:13")]
+    [InlineData(13, 42, "Recording saved · 0:13 · 42 frames dropped")]
+    [InlineData(3725, 0, "Recording saved · 1:02:05")]
+    public void Recording_status(int seconds, long dropped, string text) =>
+        Assert.Equal(text, CardMath.RecordingStatus(TimeSpan.FromSeconds(seconds), dropped));
+
+    [Theory]
     [InlineData(1920, 1080, 266.67, 150)]
     [InlineData(800, 200, 280, 70)]
     [InlineData(100, 50, 100, 50)]
