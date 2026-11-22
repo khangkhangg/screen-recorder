@@ -35,6 +35,7 @@ public sealed class RegionFrameWindow : Window
     readonly Path icon = new() { Data = (Geometry)XamlBindingHelper.ConvertValue(typeof(Geometry), Glyph), Stretch = Stretch.Uniform, Width = 16, Height = 16 };
     readonly Ellipse dot = new() { Width = 8, Height = 8, VerticalAlignment = VerticalAlignment.Center };
     readonly TextBlock name = new() { Text = "Screen Recorder", FontWeight = FontWeights.Medium }, size = new() { Opacity = 0.75 };
+    readonly FontIcon close = new() { Glyph = Glyphs.Cancel, FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
     readonly DispatcherQueueTimer escape;
     nint hmonitor;
     RectInt32 region, monitor, start;
@@ -45,7 +46,7 @@ public sealed class RegionFrameWindow : Window
     FrameGrip held;
     PointInt32 grab;
 
-    public event Action? DragStarted, DragCancelled;
+    public event Action? DragStarted, DragCancelled, CloseRequested;
     public event Action<RegionTarget>? Changed;
 
     public RegionFrameWindow()
@@ -63,6 +64,7 @@ public sealed class RegionFrameWindow : Window
         tab.Children.Add(dot);
         tab.Children.Add(name);
         tab.Children.Add(size);
+        tab.Children.Add(close);
         root.Children.Add(tab);
         Content = root;
         hwnd = NativeMethods.MakeOverlay(this, "Region frame");
@@ -131,9 +133,9 @@ public sealed class RegionFrameWindow : Window
         root.Background = Resource(idle ? "AccentFillColorDefaultBrush" : "SystemFillColorCriticalBrush");
         Shape[] shapes = [icon, dot, .. grip.Children.Cast<Shape>()];
         foreach (var s in shapes) s.Fill = Resource("TextOnAccentFillColorPrimaryBrush");
-        name.Foreground = size.Foreground = Resource("TextOnAccentFillColorPrimaryBrush");
+        name.Foreground = size.Foreground = close.Foreground = Resource("TextOnAccentFillColorPrimaryBrush");
         size.Text = idle ? $"{r.Width} x {r.Height}" : text ?? "";
-        grip.Visibility = icon.Visibility = Shown(idle);
+        grip.Visibility = icon.Visibility = close.Visibility = Shown(idle);
         dot.Visibility = Shown(!idle);
         name.Visibility = size.Visibility = Visibility.Visible; // a collapsed text measures 0 wide
         // DIPs without the texts: padding 18, grip 6 and icon 16 with a gap of 8, or the dot of 8
@@ -213,7 +215,9 @@ public sealed class RegionFrameWindow : Window
     {
         if (!pressed) return;
         var moved = dragging;
+        var closing = !moved && idle && held == FrameGrip.Move && layout is not null && RegionFrame.OnTabClose(layout, grab.X, grab.Y);
         End();
+        if (closing) { CloseRequested?.Invoke(); return; } // a click on the X of the tab
         if (moved && !region.Equals(start))
             Changed?.Invoke(new RegionTarget(hmonitor, region.X - monitor.X, region.Y - monitor.Y, region.Width, region.Height));
         else if (moved) DragCancelled?.Invoke();

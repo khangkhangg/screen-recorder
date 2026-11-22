@@ -142,4 +142,16 @@ public class RegionFrameTests
     public void Resize_stays_on_a_monitor_at_negative_coordinates() =>
         Assert.Equal(new RectInt32(-300, 100, 300, 100),
             RegionFrame.Resize(new RectInt32(-300, 100, 200, 100), FrameGrip.Right, 1000, 0, new RectInt32(-1920, 0, 1920, 1080)));
+
+    [Theory]
+    [InlineData(-1, 5, true)]
+    [InlineData(-30, 5, true)]
+    [InlineData(-31, 5, false)]
+    [InlineData(0, 5, false)]
+    [InlineData(-1, -1, false)]
+    public void Tab_close_is_the_last_square_of_the_tab(int fromRight, int fromTop, bool hit)
+    {
+        var f = RegionFrame.Layout(new RectInt32(500, 400, 640, 360), Monitor, 1, 200);
+        Assert.Equal(hit, RegionFrame.OnTabClose(f, f.Tab.X + f.Tab.Width + fromRight, f.Tab.Y + fromTop));
+    }
 }

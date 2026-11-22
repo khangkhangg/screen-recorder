@@ -35,7 +35,6 @@
                 </StackPanel>
             </Button>
             <Button x:Name="CancelButton" Style="{StaticResource Action}" Content="Cancel" Click="Cancel_Click"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     ToolTipService.ToolTip="Cancel the selection" AutomationProperties.Name="Cancel the selection" />
         </StackPanel>
     </Border>

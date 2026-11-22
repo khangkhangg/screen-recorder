@@ -18,6 +18,10 @@ public static class RegionFrame
     public const int MinSize = 64;
     static readonly (bool Left, bool Top)[] Corners = [(true, true), (false, true), (false, false), (true, false)];
 
+    // The X sits in the last square of the tab.
+    public static bool OnTabClose(FrameLayout l, int x, int y) =>
+        x >= l.Tab.X + l.Tab.Width - l.Tab.Height && x < l.Tab.X + l.Tab.Width && y >= l.Tab.Y && y < l.Tab.Y + l.Tab.Height;
+
     public static FrameLayout Layout(RectInt32 region, RectInt32 monitor, double scale, int tabWidth)
     {
         int Px(double v) => (int)Math.Round(v * scale);

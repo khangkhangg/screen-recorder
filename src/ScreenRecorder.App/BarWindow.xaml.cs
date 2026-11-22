@@ -73,6 +73,7 @@ public sealed partial class BarWindow : Window
         actionBar.Share += ShareRegion;
         actionBar.Record += ToggleRecord;
         actionBar.Cancel += CancelRegion;
+        frame.CloseRequested += CancelRegion;
         share = new(hwnd);
         DeleteOldShares();
         // the overlays come back on release, placed for the new region
