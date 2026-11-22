@@ -37,7 +37,7 @@ public sealed partial class CropWindow : Window
         Closed += (_, _) => closed = true;
         if (!NativeMethods.ExcludeFromCapture(hwnd)) Debug.WriteLine("Crop window could not be excluded from capture");
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
-        if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.IsResizable = presenter.IsMaximizable = false;
+        if (AppWindow.Presenter is OverlappedPresenter presenter) { presenter.IsResizable = presenter.IsMaximizable = false; presenter.IsAlwaysOnTop = true; } // above the region frame, which is also on top
         Picture.Source = image;
         (Picture.Width, Picture.Height) = fit;
         Place(Picture, Pad, Pad);

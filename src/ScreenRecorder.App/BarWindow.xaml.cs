@@ -20,12 +20,14 @@ public enum LogoClick { Pick, Show, Hide }
 
 public sealed partial class BarWindow : Window
 {
-    static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ScreenRecorder");
+    // Test switch: a run with this set keeps out of the real settings and the Videos folder.
+    static readonly string? DataDir = Environment.GetEnvironmentVariable("SCREENRECORDER_DATA_DIR");
+    static readonly string Folder = DataDir ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ScreenRecorder");
     static readonly string SettingsPath = Path.Combine(Folder, "settings.json");
     static readonly string PositionPath = Path.Combine(Folder, "bar-position.json");
 
     readonly nint hwnd;
-    Settings settings = Settings.Load(SettingsPath);
+    Settings settings = DataDir is null ? Settings.Load(SettingsPath) : Settings.Load(SettingsPath) with { OutputFolder = Path.Combine(DataDir, "out") };
 
     public CaptureTarget CurrentTarget { get; private set; } = new MonitorTarget(CaptureTarget.PrimaryMonitor());
 
@@ -76,7 +78,7 @@ public sealed partial class BarWindow : Window
         // the overlays come back on release, placed for the new region
         frame.DragStarted += () => { dragging = true; cameraOverlay.Hide(); logoOverlay.Hide(); actionBar.Hide(); };
         frame.DragCancelled += () => { dragging = false; UpdateOverlays(); };
-        frame.Changed += r => { dragging = false; SetTarget(r, "Region"); Remember(r); };
+        frame.Changed += r => { dragging = false; SetTarget(r, "Region", copy: true); Remember(r); };
         follow = DispatcherQueue.CreateTimer();
         follow.Interval = TimeSpan.FromMilliseconds(100);
         follow.Tick += (_, _) => FollowWindow();
@@ -196,7 +198,7 @@ public sealed partial class BarWindow : Window
     void Desktop_Click(object sender, RoutedEventArgs e)
     {
         var monitors = TargetPicker.Monitors();
-        if (monitors.Count == 1) { SetTarget(new MonitorTarget(monitors[0].Hmonitor), "Desktop"); return; }
+        if (monitors.Count == 1) { SetTarget(new MonitorTarget(monitors[0].Hmonitor), "Desktop", copy: true); return; }
         var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Bottom };
         foreach (var m in monitors) menu.Items.Add(Item(m.Name, new MonitorTarget(m.Hmonitor), m.Name));
         menu.ShowAt(DesktopSegment);
@@ -213,7 +215,7 @@ public sealed partial class BarWindow : Window
     async void Region_Click(object sender, RoutedEventArgs e)
     {
         var monitors = NativeMethods.Monitors().Select(m => (m.Hmonitor, m.Device, m.Bounds.Right - m.Bounds.Left, m.Bounds.Bottom - m.Bounds.Top));
-        if (TargetPicker.RegionClick(CurrentTarget, settings.Region, monitors) is { } saved) { SetTarget(saved, "Region"); return; }
+        if (TargetPicker.RegionClick(CurrentTarget, settings.Region, monitors) is { } saved) { SetTarget(saved, "Region", copy: true); return; }
         AppWindow.Hide();
         // the overlays sit on top, so they would take the drag meant for the region picker
         cameraOverlay.Hide();
@@ -221,7 +223,7 @@ public sealed partial class BarWindow : Window
         frame.Hide();
         picking = true;
         actionBar.Hide();
-        try { if (await RegionSelectWindow.PickAsync() is { } picked) { SetTarget(picked, "Region"); Remember(picked); } }
+        try { if (await RegionSelectWindow.PickAsync() is { } picked) { SetTarget(picked, "Region", copy: true); Remember(picked); } }
         finally { picking = false; AppWindow.Show(); UpdateOverlays(); }
     }
 
@@ -246,7 +248,7 @@ public sealed partial class BarWindow : Window
     MenuFlyoutItem Item(string text, CaptureTarget target, string label)
     {
         var item = new MenuFlyoutItem { Text = text };
-        item.Click += (_, _) => SetTarget(target, label);
+        item.Click += (_, _) => SetTarget(target, label, copy: true);
         return item;
     }
 
@@ -256,11 +258,25 @@ public sealed partial class BarWindow : Window
         if (NativeMethods.MonitorDevice(r.Hmonitor) is { } device) Save(settings with { Region = new SavedRegion(device, r.X, r.Y, r.Width, r.Height) });
     }
 
-    void SetTarget(CaptureTarget target, string label)
+    void SetTarget(CaptureTarget target, string label, bool copy = false)
     {
         CurrentTarget = target;
         ShowSource(label);
         UpdateOverlays();
+        if (copy) CopyPicked(target);
+    }
+
+    // A fresh pick is copied at once, so it can be pasted without another click.
+    async void CopyPicked(CaptureTarget target)
+    {
+        await Task.Delay(300); // the picker or menu needs this long to leave the screen
+        if (state != RecorderState.Idle || dragging || picking || CurrentTarget != target) return;
+        try { await Screenshot.CopyAsync(target); }
+        catch (Exception e) { System.Diagnostics.Debug.WriteLine(e); return; } // the Copy button still reports a failure
+        actionBar.ShowCopied();
+        LiveScreenshotIcon.Glyph = Glyphs.Check;
+        confirm.Stop();
+        confirm.Start();
     }
 
     void FitSize()
