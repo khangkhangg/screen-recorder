@@ -68,6 +68,9 @@
                         ToolTipService.ToolTip="Screenshot" AutomationProperties.Name="Screenshot">
                     <FontIcon Glyph="&#xE722;" FontSize="16" />
                 </Button>
+                <Button x:Name="MiniTargetButton" Visibility="Collapsed" Style="{StaticResource IconButton}" Click="MiniTarget_Click" AutomationProperties.Name="Capture target">
+                    <FontIcon x:Name="MiniTargetIcon" Glyph="&#xE7F4;" FontSize="16" />
+                </Button>
                 <Border x:Name="SourceSeparator" Style="{StaticResource Divider}" />
                 <Border x:Name="SourceSwitch" Padding="2" CornerRadius="10" VerticalAlignment="Center"
                         Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
@@ -92,7 +95,7 @@
                         </Button>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource Divider}" />
+                <Border x:Name="ToggleSeparator" Style="{StaticResource Divider}" />
                 <ToggleButton x:Name="CameraToggle" Style="{StaticResource IconToggle}" Click="CameraToggle_Click" ToolTipService.ToolTip="Camera">
                     <FontIcon Glyph="&#xE714;" FontSize="16" />
                 </ToggleButton>
@@ -127,6 +130,9 @@
                             <MenuFlyoutItem Text="Quit" Click="Quit_Click" />
                         </MenuFlyout>
                     </Button.Flyout>
+                </Button>
+                <Button x:Name="MiniButton" Style="{StaticResource IconButton}" Click="Mini_Click">
+                    <FontIcon x:Name="MiniIcon" Glyph="&#xE76B;" FontSize="16" />
                 </Button>
             </StackPanel>
         </Grid>

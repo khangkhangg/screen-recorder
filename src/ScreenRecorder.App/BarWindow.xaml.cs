@@ -100,7 +100,7 @@ public sealed partial class BarWindow : Window
         RegisterHotkeys();
         Root.ActualThemeChanged += (_, _) => { ShowSource(sourceLabel); frame.Redraw(); };
         uiSettings.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(frame.Redraw); // the accent color
-        Root.Loaded += (_, _) => { PlaceWindow(); UpdateOverlays(); };
+        Root.Loaded += (_, _) => { SetState(state); PlaceWindow(); UpdateOverlays(); };
     }
 
     readonly CameraOverlayWindow cameraOverlay;
@@ -237,6 +237,8 @@ public sealed partial class BarWindow : Window
         Button[] segments = [DesktopSegment, WindowSegment, RegionSegment];
         string[] names = ["Desktop", "Window", "Region"];
         var selected = SegmentOf(CurrentTarget);
+        MiniTargetIcon.Glyph = selected switch { 1 => Glyphs.Window, 2 => Glyphs.Region, _ => Glyphs.Desktop };
+        ToolTipService.SetToolTip(MiniTargetButton, label);
         for (var i = 0; i < segments.Length; i++)
         {
             var on = i == selected;
@@ -244,6 +246,34 @@ public sealed partial class BarWindow : Window
             ToolTipService.SetToolTip(segments[i], on && i == 2 ? "Region. Click again to select a new area." : on ? label : names[i]);
             AutomationProperties.SetName(segments[i], on ? names[i] + ", selected" : names[i]);
         }
+    }
+
+    // The mini bar has one target button, so its menu holds all 3 kinds.
+    void MiniTarget_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Bottom };
+        var monitors = TargetPicker.Monitors();
+        if (monitors.Count == 1) menu.Items.Add(Item("Desktop", new MonitorTarget(monitors[0].Hmonitor), "Desktop"));
+        else
+        {
+            var desktop = new MenuFlyoutSubItem { Text = "Desktop" };
+            foreach (var m in monitors) desktop.Items.Add(Item(m.Name, new MonitorTarget(m.Hmonitor), m.Name));
+            menu.Items.Add(desktop);
+        }
+        var windows = new MenuFlyoutSubItem { Text = "Window" };
+        foreach (var w in TargetPicker.Windows()) windows.Items.Add(Item(w.Title, new WindowTarget(w.Hwnd), w.Title));
+        windows.IsEnabled = windows.Items.Count > 0;
+        menu.Items.Add(windows);
+        var region = new MenuFlyoutItem { Text = "Region" };
+        region.Click += Region_Click;
+        menu.Items.Add(region);
+        menu.ShowAt(MiniTargetButton);
+    }
+
+    void Mini_Click(object sender, RoutedEventArgs e)
+    {
+        Save(settings with { Mini = !settings.Mini });
+        SetState(state);
     }
 
     MenuFlyoutItem Item(string text, CaptureTarget target, string label)
@@ -460,8 +490,17 @@ public sealed partial class BarWindow : Window
         if (!idle) card.Dismiss();
         Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
         RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
-        foreach (var c in new UIElement[] { ScreenshotButton, SourceSeparator, SourceSwitch, MicToggle, SoundToggle, MoreSeparator, MoreButton }) c.Visibility = Shown(idle);
-        LiveScreenshotButton.Visibility = Shown(!idle);
+        var mini = settings.Mini;
+        ScreenshotButton.Visibility = MiniButton.Visibility = Shown(idle);
+        MiniTargetButton.Visibility = Shown(idle && mini);
+        foreach (var c in new UIElement[] { SourceSeparator, SourceSwitch, MicToggle, SoundToggle, MoreSeparator, MoreButton })
+            c.Visibility = Shown(idle && !mini);
+        CameraToggle.Visibility = LogoToggle.Visibility = ToggleSeparator.Visibility = Shown(!mini);
+        LiveScreenshotButton.Visibility = Shown(!idle && !mini);
+        MiniIcon.Glyph = mini ? Glyphs.Expand : Glyphs.Collapse;
+        var miniName = mini ? "Full bar" : "Mini bar";
+        ToolTipService.SetToolTip(MiniButton, miniName);
+        AutomationProperties.SetName(MiniButton, miniName);
         RecordButton.Visibility = Shown(!live);
         RecordIcon.Glyph = countdown ? Glyphs.Cancel : Glyphs.Record;
         CountdownText.Visibility = Shown(countdown);
@@ -474,7 +513,7 @@ public sealed partial class BarWindow : Window
         PauseIcon.Glyph = s == RecorderState.Paused ? Glyphs.Play : Glyphs.Pause;
         ToolTipService.SetToolTip(PauseButton, pauseName);
         AutomationProperties.SetName(PauseButton, pauseName);
-        DesktopSegment.IsEnabled = WindowSegment.IsEnabled = RegionSegment.IsEnabled = MoreButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
+        DesktopSegment.IsEnabled = WindowSegment.IsEnabled = RegionSegment.IsEnabled = MoreButton.IsEnabled = MiniTargetButton.IsEnabled = MicToggle.IsEnabled = SoundToggle.IsEnabled = idle && !busy;
         if (Root.XamlRoot is not null) FitSize();
         ShowOutline();
     }
@@ -503,7 +542,7 @@ public sealed partial class BarWindow : Window
 
     (bool, bool) ApplySettings(Settings s)
     {
-        Save(s with { Region = settings.Region }); // the settings window holds an older copy of the region
+        Save(s with { Region = settings.Region, Mini = settings.Mini }); // the settings window holds an older copy of the region
         cameraOverlay.WebcamId = s.WebcamId;
         return RegisterHotkeys();
     }
