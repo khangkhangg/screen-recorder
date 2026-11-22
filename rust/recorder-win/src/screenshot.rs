@@ -258,6 +258,10 @@ impl Drop for Clipboard {
 /// A device-independent bitmap in global memory: header, then bottom-up 32-bit rows.
 fn dib_memory(bgra: &[u8], w: u32, h: u32) -> Result<HGLOBAL> {
     let fail = |e| win(e, Error::Device, "The clipboard could not be used.");
+    let size = pixel_bytes(w, h)?;
+    if bgra.len() != size {
+        return Err(Error::Invalid("The picture does not match its size.".into()));
+    }
     let header = BITMAPINFOHEADER {
         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
         biWidth: w as i32,
@@ -265,12 +269,12 @@ fn dib_memory(bgra: &[u8], w: u32, h: u32) -> Result<HGLOBAL> {
         biPlanes: 1,
         biBitCount: 32,
         biCompression: BI_RGB.0,
-        biSizeImage: w * h * 4,
+        biSizeImage: size as u32,
         ..Default::default()
     };
     let head = std::mem::size_of::<BITMAPINFOHEADER>();
     let row = w as usize * 4;
-    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, head + pixel_bytes(w, h)?) }.map_err(fail)?;
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, head + size) }.map_err(fail)?;
     let ptr = unsafe { GlobalLock(memory) } as *mut u8;
     if ptr.is_null() {
         let _ = unsafe { GlobalFree(Some(memory)) };
@@ -385,6 +389,12 @@ mod tests {
         for (w, h) in [(32_769, 1), (1, 32_769), (16_385, 16_384), (u32::MAX, u32::MAX)] {
             assert!(matches!(pixel_bytes(w, h), Err(Error::Invalid(_))), "{w} {h}");
         }
+    }
+
+    #[test]
+    fn a_buffer_one_row_too_long_is_refused() {
+        let bgra = vec![0u8; 4 * 3 * 4];
+        assert!(matches!(dib_memory(&bgra, 4, 2), Err(Error::Invalid(_))));
     }
 
     fn texture_frame(device: &Device, bgra: [u8; 4]) -> Frame {
