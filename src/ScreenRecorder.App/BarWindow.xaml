@@ -4,6 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Screen Recorder">
     <Border x:Name="Root" Padding="6" CornerRadius="14" HorizontalAlignment="Left" VerticalAlignment="Top">
+        <Border.ContextFlyout>
+            <MenuFlyout>
+                <MenuFlyoutItem x:Name="ContextModeItem" Click="Mini_Click" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem x:Name="ContextSettingsItem" Text="Settings" Click="Settings_Click" />
+                <MenuFlyoutItem Text="Quit" Click="Quit_Click" />
+            </MenuFlyout>
+        </Border.ContextFlyout>
         <Border.Resources>
             <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
                 <Setter Property="Width" Value="40" />
@@ -125,6 +133,7 @@
                             <MenuFlyoutItem Text="Choose logo" Click="PickLogo_Click" />
                             <MenuFlyoutItem x:Name="RemoveLogoItem" Text="Remove logo" Click="RemoveLogo_Click" />
                             <MenuFlyoutItem Text="Open recordings folder" Click="OpenFolder_Click" />
+                            <MenuFlyoutItem x:Name="MoreModeItem" Click="Mini_Click" />
                             <MenuFlyoutItem Text="Settings" Click="Settings_Click" />
                             <MenuFlyoutSeparator />
                             <MenuFlyoutItem Text="Quit" Click="Quit_Click" />

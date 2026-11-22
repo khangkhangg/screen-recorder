@@ -501,6 +501,8 @@ public sealed partial class BarWindow : Window
         var miniName = mini ? "Full bar" : "Mini bar";
         ToolTipService.SetToolTip(MiniButton, miniName);
         AutomationProperties.SetName(MiniButton, miniName);
+        ContextModeItem.Text = MoreModeItem.Text = miniName;
+        ContextModeItem.IsEnabled = ContextSettingsItem.IsEnabled = idle && !busy;
         RecordButton.Visibility = Shown(!live);
         RecordIcon.Glyph = countdown ? Glyphs.Cancel : Glyphs.Record;
         CountdownText.Visibility = Shown(countdown);
