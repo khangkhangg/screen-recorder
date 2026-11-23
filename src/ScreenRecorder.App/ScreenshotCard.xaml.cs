@@ -23,7 +23,8 @@ public sealed partial class ScreenshotCard : Window
     readonly DispatcherQueueTimer life, copiedTimer, shareTimer;
     readonly List<CropWindow> crops = [];
     readonly SharePanel share;
-    string path = "", folder = "";
+    string path = "", folder = "", recordingStatus = "", captionText = "";
+    string? captionFolder;
     bool copied, hover, active, sharing;
     long sharedAt;
     int dismissals;
@@ -90,7 +91,7 @@ public sealed partial class ScreenshotCard : Window
         {
             var picture = await LoadPicture(path, 400, 150, scale);
             if (run != shows) return;
-            (this.path, this.copied, width, height) = (path, copied, picture.Width, picture.Height);
+            (this.path, this.copied, width, height, folder) = (path, copied, picture.Width, picture.Height, "");
             Thumb.Source = picture.Image;
             (Thumb.Width, Thumb.Height) = picture.Fit;
             SetMode(video: false);
@@ -123,9 +124,23 @@ public sealed partial class ScreenshotCard : Window
         (Thumb.Width, Thumb.Height) = (400, 150);
         SetMode(video: true);
         copiedTimer.Stop();
-        StatusText.Text = status;
+        StatusText.Text = recordingStatus = status;
+        ShowCaptionLine();
         var area = DisplayArea.Primary;
         Place(area, NativeMethods.MonitorScale(Win32Interop.GetMonitorFromDisplayId(area.DisplayId)));
+    }
+
+    // A caption job reports here. Only the card of that recording shows it, even when the job ends first.
+    public void ShowCaptions(string recordingFolder, string text)
+    {
+        (captionFolder, captionText) = (recordingFolder, text);
+        ShowCaptionLine();
+    }
+
+    void ShowCaptionLine()
+    {
+        if (folder.Length > 0 && captionFolder == folder)
+            StatusText.Text = captionText.Length == 0 ? recordingStatus : $"{recordingStatus} · {captionText}";
     }
 
     void SetMode(bool video)

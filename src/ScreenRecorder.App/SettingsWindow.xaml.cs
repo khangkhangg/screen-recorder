@@ -22,9 +22,11 @@ public sealed partial class SettingsWindow : Window
     bool loading = true, hotkeyBoxFocused;
 
     readonly Action releaseHotkeys;
+    readonly Func<CaptionChoice, Task<bool>> captionsReady;
 
-    public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply, Action releaseHotkeys)
+    public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply, Action releaseHotkeys, Func<CaptionChoice, Task<bool>> captionsReady)
     {
+        this.captionsReady = captionsReady;
         InitializeComponent();
         if (!NativeMethods.ExcludeFromCapture(WinRT.Interop.WindowNative.GetWindowHandle(this)))
             System.Diagnostics.Debug.WriteLine("Settings window could not be excluded from capture");
@@ -48,6 +50,8 @@ public sealed partial class SettingsWindow : Window
         CountdownSwitch.IsOn = settings.Countdown;
         ClickBox.ItemsSource = Enum.GetNames<ClickEffect>();
         ClickBox.SelectedIndex = Enum.IsDefined(settings.ClickEffect) ? (int)settings.ClickEffect : 0;
+        CaptionBox.ItemsSource = new[] { "Off", "English", "Any language (detected)" };
+        CaptionBox.SelectedIndex = Enum.IsDefined(settings.Captions) ? (int)settings.Captions : 0;
         ShowRate();
         Root.ActualThemeChanged += (_, _) => ShowRate();
         LoadDevices();
@@ -143,6 +147,15 @@ public sealed partial class SettingsWindow : Window
     void Countdown_Toggled(object sender, RoutedEventArgs e) => Save(settings with { Countdown = CountdownSwitch.IsOn });
 
     void Click_Changed(object sender, SelectionChangedEventArgs e) => Save(settings with { ClickEffect = (ClickEffect)Math.Max(0, ClickBox.SelectedIndex) });
+
+    // A choice whose files are missing asks to download them first, and goes back to Off when the user says no.
+    async void Captions_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (loading) return;
+        var c = (CaptionChoice)Math.Max(0, CaptionBox.SelectedIndex);
+        if (c != CaptionChoice.Off && !await captionsReady(c)) CaptionBox.SelectedIndex = 0;
+        else Save(settings with { Captions = c });
+    }
 
     void FrameRate_Click(object sender, RoutedEventArgs e)
     {

@@ -86,7 +86,7 @@ public sealed partial class BarWindow : Window
         clock = DispatcherQueue.CreateTimer();
         clock.Interval = TimeSpan.FromMilliseconds(250);
         clock.Tick += (_, _) => ShowElapsed();
-        Closed += (_, _) => { follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); card.Close(); actionBar.Close(); };
+        Closed += (_, _) => { StopCaptions(); follow.Stop(); clock.Stop(); countdownRun++; settingsWindow?.Close(); hotkeys?.Dispose(); cameraOverlay.Close(); logoOverlay.Close(); frame.Close(); card.Close(); actionBar.Close(); };
         cameraOverlay.WebcamId = settings.WebcamId;
         // Closing the bar while recording saves the recording first.
         AppWindow.Closing += (_, e) =>
@@ -513,6 +513,7 @@ public sealed partial class BarWindow : Window
         state = s;
         bool idle = s == RecorderState.Idle, countdown = s == RecorderState.Countdown, live = !idle && !countdown;
         if (!idle) card.Dismiss();
+        UpdateCaptions(idle && !busy);
         Visibility Shown(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
         RecordButton.IsEnabled = PauseButton.IsEnabled = StopButton.IsEnabled = !busy;
         var mini = settings.Mini;
@@ -560,7 +561,7 @@ public sealed partial class BarWindow : Window
     {
         if (settingsWindow is null)
         {
-            settingsWindow = new SettingsWindow(settings, hotkeysOk, ApplySettings, () => hotkeys?.Dispose());
+            settingsWindow = new SettingsWindow(settings, hotkeysOk, ApplySettings, () => hotkeys?.Dispose(), CaptionsReady);
             // LostFocus may not fire when the window closes with a hotkey box focused.
             settingsWindow.Closed += (_, _) => { settingsWindow = null; RegisterHotkeys(); };
         }

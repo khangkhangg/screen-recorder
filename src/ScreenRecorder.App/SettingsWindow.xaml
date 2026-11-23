@@ -78,6 +78,14 @@
             </StackPanel>
             <ComboBox x:Name="ClickBox" Grid.Column="1" Width="220" SelectionChanged="Click_Changed" AutomationProperties.Name="Click effect" />
         </Grid>
+        <Grid Style="{StaticResource Row}">
+            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="Captions" />
+                <TextBlock Text="Writes the spoken words to a caption file after each recording" Style="{StaticResource Helper}" />
+            </StackPanel>
+            <ComboBox x:Name="CaptionBox" Grid.Column="1" Width="220" SelectionChanged="Captions_Changed" AutomationProperties.Name="Captions" />
+        </Grid>
 
         <TextBlock Text="Devices" Style="{StaticResource Heading}" />
             <Grid Style="{StaticResource Row}">

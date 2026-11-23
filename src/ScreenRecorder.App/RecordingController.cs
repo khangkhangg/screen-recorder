@@ -147,6 +147,7 @@ public sealed partial class BarWindow
         var file = new[] { "final.mp4", "screen.mp4" }.Select(n => Path.Combine(result.Folder, n)).FirstOrDefault(File.Exists);
         if (file is null) System.Diagnostics.Process.Start("explorer.exe", $"\"{result.Folder}\""); // nothing to play, so show the folder
         else card.ShowRecording(file, result.Folder, CardMath.RecordingStatus(length, result.DroppedFrames));
+        QueueCaptions(result.Folder);
     }
 
 
@@ -157,6 +158,7 @@ public sealed partial class BarWindow
         clock.Stop();
         SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
         _ = s.DisposeAsync();
+        QueueCaptions(r.Folder);
         if (r.Notes.Count > 0) Warn(r.Notes[^1], "Recording");
     }
 
