@@ -58,6 +58,21 @@ public class SettingsTests
         Assert.Equivalent(old with { ClickEffect = ClickEffect.Off }, Settings.Load(path));
     }
 
+    [Theory]
+    [InlineData("\"Klingon\"")]
+    [InlineData("7")]
+    public void Unknown_captions_load_as_off_and_keep_the_rest(string value)
+    {
+        var path = Path.GetTempFileName();
+        var old = Settings.Default with { FrameRate = 30, Captions = CaptionChoice.English };
+        old.Save(path);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        Assert.Equal("English", json["captions"]!.GetValue<string>());
+        json["captions"] = System.Text.Json.Nodes.JsonNode.Parse(value);
+        File.WriteAllText(path, json.ToJsonString());
+        Assert.Equivalent(old with { Captions = CaptionChoice.Off }, Settings.Load(path));
+    }
+
     [Fact]
     public void Empty_layout_gives_default()
     {
