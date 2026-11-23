@@ -26,4 +26,12 @@ public class ToolbarTests
     [InlineData(true, "Camera, on")]
     [InlineData(false, "Camera, off")]
     public void Name_with_state(bool on, string name) => Assert.Equal(name, BarWindow.NameWithState("Camera", on));
+
+    [Theory]
+    [InlineData(0, 0, false)]
+    [InlineData(3, 2, false)]
+    [InlineData(6, 0, true)]
+    [InlineData(-4, -3, true)]
+    public void A_press_becomes_a_drag_after_6_pixels(double dx, double dy, bool drag) =>
+        Assert.Equal(drag, BarWindow.IsDrag(dx, dy));
 }

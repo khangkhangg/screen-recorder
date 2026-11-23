@@ -100,6 +100,9 @@ public sealed partial class BarWindow : Window
         RegisterHotkeys();
         Root.ActualThemeChanged += (_, _) => { ShowSource(sourceLabel); frame.Redraw(); };
         uiSettings.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(frame.Redraw); // the accent color
+        // handledEventsToo, because buttons mark the press as handled
+        Root.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(Root_PointerPressed), true);
+        Root.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(Root_PointerMoved), true);
         Root.Loaded += (_, _) => { SetState(state); PlaceWindow(); UpdateOverlays(); };
     }
 
@@ -113,6 +116,7 @@ public sealed partial class BarWindow : Window
     readonly ActionBarWindow actionBar;
     readonly SharePanel share;
     bool dragging, picking;
+    Windows.Foundation.Point? pressedAt;
     RectF? overlayArea;
 
     static RectF? AreaOf(CaptureTarget target) => TargetPicker.AreaOnScreen(target, NativeMethods.MonitorRect, NativeMethods.WindowRect);
@@ -185,7 +189,28 @@ public sealed partial class BarWindow : Window
         AppWindow.Move(saved ?? new PointInt32(area.X + (area.Width - AppWindow.Size.Width) / 2, area.Y + (int)(24 * scale)));
     }
 
-    void Grip_PointerPressed(object sender, PointerRoutedEventArgs e)
+    // A press anywhere on the bar that moves this far becomes a drag of the bar, so a plain click still works.
+    public static bool IsDrag(double dx, double dy) => Math.Abs(dx) + Math.Abs(dy) >= 6;
+
+    void Root_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(Root);
+        pressedAt = point.Properties.IsLeftButtonPressed ? point.Position : null;
+    }
+
+    void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (pressedAt is not { } start) return;
+        var point = e.GetCurrentPoint(Root);
+        if (!point.Properties.IsLeftButtonPressed) { pressedAt = null; return; }
+        if (!IsDrag(point.Position.X - start.X, point.Position.Y - start.Y)) return;
+        pressedAt = null;
+        DragBar();
+    }
+
+    void Grip_PointerPressed(object sender, PointerRoutedEventArgs e) => DragBar();
+
+    void DragBar()
     {
         NativeMethods.DragWindow(hwnd);
         try
