@@ -139,7 +139,7 @@ public sealed class RegionFrameWindow : Window
         dot.Visibility = Shown(!idle);
         name.Visibility = size.Visibility = Visibility.Visible; // a collapsed text measures 0 wide
         // DIPs without the texts: padding 18, grip 6 and icon 16 with a gap of 8, or the dot of 8
-        double baseWidth = idle ? 48 : 26, nameWidth = idle ? Width(name) : 0, sizeWidth = Width(size);
+        double baseWidth = idle ? 64 : 26, nameWidth = idle ? Width(name) : 0, sizeWidth = Width(size);
         var (showName, showSize) = idle ? RegionFrame.TabContent(r.Width, Px(baseWidth), Px(nameWidth), Px(sizeWidth)) : (false, true);
         name.Visibility = Shown(showName);
         size.Visibility = Shown(showSize);
