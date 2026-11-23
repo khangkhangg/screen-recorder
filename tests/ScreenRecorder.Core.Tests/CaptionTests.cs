@@ -79,7 +79,7 @@ public class CaptionTests
         q.Add("b");
         Assert.Equal("a", q.Next());
         Assert.Null(q.Next());
-        q.Done();
+        q.Done("a");
         Assert.Equal("b", q.Next());
     }
 
@@ -95,11 +95,33 @@ public class CaptionTests
         Assert.Null(q.Next());
         q.Resume();
         Assert.Equal("a", q.Next());
-        q.Done();
+        q.Done("a");
         Assert.Equal("b", q.Next());
-        q.Done();
+        q.Done("b");
         Assert.Equal("c", q.Next());
     }
+
+    [Fact]
+    public void A_job_that_ended_before_the_pause_does_not_run_again()
+    {
+        var q = new CaptionQueue();
+        q.Add("a");
+        q.Add("b");
+        Assert.Equal("a", q.Next());
+        Assert.Equal("a", q.Pause());
+        q.Done("a");
+        q.Resume();
+        Assert.Equal("b", q.Next());
+        q.Done("b");
+        Assert.Null(q.Next());
+    }
+
+    [Theory]
+    [InlineData(60, 600)]
+    [InlineData(200, 600)]
+    [InlineData(1200, 3600)]
+    public void The_helper_gets_10_minutes_or_3_times_the_sound(int soundSeconds, int limitSeconds) =>
+        Assert.Equal(TimeSpan.FromSeconds(limitSeconds), CaptionMath.HelperLimit(TimeSpan.FromSeconds(soundSeconds)));
 
     [Fact]
     public void Pause_with_nothing_running_stops_nothing() => Assert.Null(new CaptionQueue().Pause());

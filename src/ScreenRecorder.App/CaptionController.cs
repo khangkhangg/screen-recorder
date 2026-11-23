@@ -10,6 +10,7 @@ public sealed partial class BarWindow
     readonly CaptionQueue captionQueue = new();
     CancellationTokenSource? captionStop;
     Task? captionWork;
+    bool captionBusy, captionsClosed;
 
     Task<bool> CaptionsReady(CaptionChoice c) =>
         captions.IsReady(c) ? Task.FromResult(true) : CaptionConsentWindow.AskAsync(captions, c);
@@ -18,9 +19,12 @@ public sealed partial class BarWindow
     {
         var c = settings.Captions;
         if (c == CaptionChoice.Off || CaptionService.TrackIn(folder) is null) return;
-        if (!await CaptionsReady(c))
+        var ready = await CaptionsReady(c);
+        if (captionsClosed) return;
+        if (!ready)
         {
             Save(settings with { Captions = CaptionChoice.Off });
+            settingsWindow?.ShowCaptions(CaptionChoice.Off);
             return;
         }
         captionQueue.Add(folder);
@@ -39,38 +43,51 @@ public sealed partial class BarWindow
         PumpCaptions();
     }
 
+    // captionBusy stays set until the job's own continuation has run, so a job never starts twice.
     async void PumpCaptions()
     {
-        if (captionWork is { IsCompleted: false } || captionQueue.Next() is not { } folder) return;
+        if (captionsClosed || captionBusy || captionQueue.Next() is not { } folder) return;
+        captionBusy = true;
         var c = settings.Captions;
         var stop = captionStop = new CancellationTokenSource();
+        var stopped = false;
         if (c != CaptionChoice.Off)
         {
-            card.ShowCaptions(folder, "Making captions");
+            ShowCaptionLine(folder, "Making captions");
             try
             {
-                await (captionWork = captions.RunAsync(folder, c, new Progress<int>(p => card.ShowCaptions(folder, $"Making captions {p}%")), stop.Token));
-                card.ShowCaptions(folder, "Captions saved");
+                await (captionWork = captions.RunAsync(folder, c, new Progress<int>(p => ShowCaptionLine(folder, $"Making captions {p}%")), stop.Token));
+                ShowCaptionLine(folder, "Captions saved");
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
-                card.ShowCaptions(folder, "");
+                stopped = true;
+                ShowCaptionLine(folder, "");
             }
             // A failed job never touches the recording itself.
             catch (Exception e)
             {
-                card.ShowCaptions(folder, "Captions failed");
+                ShowCaptionLine(folder, "Captions failed");
                 try { CaptionService.AddNote(folder, $"captions failed: {e.Message}"); }
                 catch (Exception note) { System.Diagnostics.Debug.WriteLine(note); }
             }
         }
-        if (!stop.IsCancellationRequested) captionQueue.Done();
+        if (!stopped) captionQueue.Done(folder);
+        captionBusy = false;
         PumpCaptions();
     }
 
-    // On quit the helper is killed and the job deletes its temporary files before the app exits.
+    // The card is closed with the bar.
+    void ShowCaptionLine(string folder, string text)
+    {
+        if (!captionsClosed) card.ShowCaptions(folder, text);
+    }
+
+    // On quit the consent window closes first, then the helper is killed and the job deletes its temporary files.
     void StopCaptions()
     {
+        captionsClosed = true;
+        CaptionConsentWindow.CloseForQuit();
         captionStop?.Cancel();
         try { captionWork?.Wait(TimeSpan.FromSeconds(3)); }
         catch (AggregateException) { }

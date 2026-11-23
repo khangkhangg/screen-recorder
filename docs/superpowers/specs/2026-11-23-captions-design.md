@@ -28,7 +28,7 @@ The user makes demo videos and wants the spoken words as captions, without a sec
 
 ## What the user gets
 
-- A setting "Captions" in the Settings window with 3 choices: Off, English, Any language (detected). It starts at Off and is saved in `settings.json` as `Captions`.
+- A setting "Captions" in the Settings window with 3 choices: Off, English, Any language (detected). It starts at Off and is saved in `settings.json` as `captions`.
 - The first time the user picks a choice other than Off, a window says what will be downloaded, from where, how large, and where it is stored, with Download and Cancel. Cancel puts the setting back to Off.
 - After Stop, the card shows "Making captions" with a percentage, then "Captions saved". The recording is ready to play the whole time.
 - The result is 2 files in the recording folder with the name of the video the card plays: `final.srt` and `final.vtt`, or `screen.srt` and `screen.vtt` when there is no finished video. Players such as VLC and the Windows Media Player load a caption file with the same name as the video.

@@ -15,10 +15,15 @@ sealed class CaptionConsentWindow : Window
     static CaptionConsentWindow? open;
     readonly TaskCompletionSource<bool> done = new();
     readonly Border root = new() { Padding = new Thickness(24) };
+    readonly CaptionChoice choice;
+    static bool appClosing;
+    bool closed;
     CancellationTokenSource? download;
 
+    // A window open for the other choice answers no to this one.
     public static Task<bool> AskAsync(CaptionService service, CaptionChoice choice)
     {
+        if (appClosing || open is not null && open.choice != choice) return Task.FromResult(false);
         if (open is null)
         {
             open = new CaptionConsentWindow(service, choice);
@@ -28,8 +33,16 @@ sealed class CaptionConsentWindow : Window
         return open.done.Task;
     }
 
+    // The app is quitting: the open window closes, which stops its download, and no new one opens.
+    public static void CloseForQuit()
+    {
+        appClosing = true;
+        open?.Close();
+    }
+
     CaptionConsentWindow(CaptionService service, CaptionChoice choice)
     {
+        this.choice = choice;
         Title = "Captions";
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico"));
         if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.IsResizable = presenter.IsMaximizable = presenter.IsMinimizable = false;
@@ -72,7 +85,7 @@ sealed class CaptionConsentWindow : Window
             {
                 await service.DownloadAsync(choice, new Progress<double>(p => bar.Value = p), download.Token);
                 done.TrySetResult(true);
-                Close();
+                if (!closed) Close();
             }
             catch (Exception e) when (!download.IsCancellationRequested)
             {
@@ -83,12 +96,14 @@ sealed class CaptionConsentWindow : Window
                 ok.IsEnabled = true;
                 Fit();
             }
-            catch (OperationCanceledException) { }
+            // The window was closed: whatever the download threw has no one to show it to.
+            catch (Exception) { }
         };
         cancel.Click += (_, _) => Close();
         // Closing stops a running download, which deletes its partial file.
         Closed += (_, _) =>
         {
+            closed = true;
             download?.Cancel();
             done.TrySetResult(false);
         };

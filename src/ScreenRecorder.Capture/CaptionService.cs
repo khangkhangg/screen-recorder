@@ -38,7 +38,7 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
                     await using var target = File.Create(tmp);
                     using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                     long written = 0;
-                    for (int n; (n = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0;)
+                    for (int n; (n = await ReadAsync(source, buffer, ct).ConfigureAwait(false)) > 0;)
                     {
                         if ((written += n) > f.Size) throw new InvalidDataException($"{f.Name} is larger than expected, so it was deleted.");
                         sha.AppendData(buffer, 0, n);
@@ -54,6 +54,18 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
             finally { File.Delete(tmp); }
         }
         File.WriteAllText(Path.Combine(folder, "LICENSE.txt"), CaptionMath.License);
+    }
+
+    // A download fails when no data arrives for 60 seconds.
+    static async Task<int> ReadAsync(Stream source, byte[] buffer, CancellationToken ct)
+    {
+        using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stall.CancelAfter(TimeSpan.FromSeconds(60));
+        try { return await source.ReadAsync(buffer, stall.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("No data arrived for 60 seconds.");
+        }
     }
 
     // whisper-cli.exe goes last, so its presence means the helper is complete.
@@ -76,7 +88,10 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
         var name = CaptionMath.OutputName(File.Exists(Path.Combine(recording, "final.mp4")));
         try
         {
-            await Task.Run(() => Resample(Path.Combine(recording, track), wav, ct), ct).ConfigureAwait(false);
+            var samples = await Task.Run(() => Resample(Path.Combine(recording, track), wav, ct), ct).ConfigureAwait(false);
+            var limit = CaptionMath.HelperLimit(TimeSpan.FromSeconds(samples / 16000.0));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(limit);
             var start = new ProcessStartInfo(Path.Combine(folder, CaptionMath.Cli))
             {
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
@@ -87,7 +102,7 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
             p.ErrorDataReceived += (_, e) => { if (CaptionMath.Progress(e.Data) is { } n) progress.Report(n); else if (e.Data is { Length: > 0 }) last = e.Data; };
             p.OutputDataReceived += (_, _) => { };
             p.Start();
-            using (ct.Register(() => { try { p.Kill(true); } catch (Exception e) when (e is InvalidOperationException or Win32Exception) { } }))
+            using (timeout.Token.Register(() => { try { p.Kill(true); } catch (Exception e) when (e is InvalidOperationException or Win32Exception) { } }))
             {
                 try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception e) when (e is InvalidOperationException or Win32Exception) { }
                 p.BeginErrorReadLine();
@@ -95,6 +110,7 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
                 await p.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             }
             ct.ThrowIfCancellationRequested();
+            if (timeout.IsCancellationRequested) throw new TimeoutException($"The caption helper took longer than {limit.TotalMinutes:0} minutes, so it was stopped.");
             if (p.ExitCode != 0) throw new IOException($"The caption helper stopped with code {p.ExitCode}: {last}");
             foreach (var ext in new[] { ".srt", ".vtt" }) File.Move(output + ext, Path.Combine(recording, name + ext), true);
         }
@@ -105,7 +121,7 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
     }
 
     // The WavWriter track is 48 kHz stereo float with a 44-byte header.
-    static void Resample(string source, string target, CancellationToken ct)
+    static long Resample(string source, string target, CancellationToken ct)
     {
         using var input = File.OpenRead(source);
         using var output = File.Create(target);
@@ -122,6 +138,7 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
         }
         output.Position = 0;
         output.Write(CaptionMath.Wav16kHeader(samples));
+        return samples;
     }
 
     public static void AddNote(string recording, string note)
@@ -129,6 +146,8 @@ public sealed class CaptionService(string folder, HttpMessageHandler? handler = 
         var path = Path.Combine(recording, "session.json");
         if (!File.Exists(path)) return;
         var f = SessionJson.Deserialize(File.ReadAllText(path));
-        File.WriteAllText(path, SessionJson.Serialize(f with { Notes = [.. f.Notes, note] }));
+        // Same as RecordingSession.WriteSession: a failed write leaves the last good file in place.
+        File.WriteAllText(path + ".tmp", SessionJson.Serialize(f with { Notes = [.. f.Notes, note] }));
+        File.Move(path + ".tmp", path, true);
     }
 }

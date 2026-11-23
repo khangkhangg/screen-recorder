@@ -151,13 +151,15 @@ public sealed partial class BarWindow
     }
 
 
-    void StoppedByItself(RecordingSession s, RecordingResult r)
+    async void StoppedByItself(RecordingSession s, RecordingResult r)
     {
         if (session != s || busy) return; // a stop by the user is already saving it
         session = null;
         clock.Stop();
         SetState(RecorderStateMachine.Next(state, RecorderCommand.ToggleRecord, settings.Countdown));
-        _ = s.DisposeAsync();
+        // The session has stopped already, so this only waits for its files to close before captions read them.
+        try { await s.DisposeAsync(); }
+        catch (Exception e) when (IsRecordingError(e)) { System.Diagnostics.Debug.WriteLine(e); }
         QueueCaptions(r.Folder);
         if (r.Notes.Count > 0) Warn(r.Notes[^1], "Recording");
     }

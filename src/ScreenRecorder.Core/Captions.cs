@@ -63,6 +63,9 @@ public static partial class CaptionMath
         return mono;
     }
 
+    // The helper is killed after 10 minutes or 3 times the sound length, whichever is longer.
+    public static TimeSpan HelperLimit(TimeSpan sound) => TimeSpan.FromTicks(Math.Max(TimeSpan.FromMinutes(10).Ticks, sound.Ticks * 3));
+
     public static byte[] Wav16kHeader(long samples)
     {
         var h = new byte[44];
@@ -139,5 +142,10 @@ public sealed class CaptionQueue
         return Running;
     }
 
-    public void Done() => Running = null;
+    // A finished job leaves the line, even when a Pause put it back after it ended.
+    public void Done(string folder)
+    {
+        _waiting.Remove(folder);
+        if (Running == folder) Running = null;
+    }
 }

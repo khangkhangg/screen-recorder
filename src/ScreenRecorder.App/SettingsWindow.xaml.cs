@@ -19,7 +19,7 @@ public sealed partial class SettingsWindow : Window
     Settings settings;
     readonly Func<Settings, (bool Record, bool Screenshot)> apply;
     readonly List<string?> webcamIds = [null], micIds = [null];
-    bool loading = true, hotkeyBoxFocused;
+    bool loading = true, hotkeyBoxFocused, closed;
 
     readonly Action releaseHotkeys;
     readonly Func<CaptionChoice, Task<bool>> captionsReady;
@@ -27,6 +27,7 @@ public sealed partial class SettingsWindow : Window
     public SettingsWindow(Settings current, (bool Record, bool Screenshot) hotkeysOk, Func<Settings, (bool, bool)> apply, Action releaseHotkeys, Func<CaptionChoice, Task<bool>> captionsReady)
     {
         this.captionsReady = captionsReady;
+        Closed += (_, _) => closed = true;
         InitializeComponent();
         if (!NativeMethods.ExcludeFromCapture(WinRT.Interop.WindowNative.GetWindowHandle(this)))
             System.Diagnostics.Debug.WriteLine("Settings window could not be excluded from capture");
@@ -153,8 +154,20 @@ public sealed partial class SettingsWindow : Window
     {
         if (loading) return;
         var c = (CaptionChoice)Math.Max(0, CaptionBox.SelectedIndex);
-        if (c != CaptionChoice.Off && !await captionsReady(c)) CaptionBox.SelectedIndex = 0;
+        var ready = c == CaptionChoice.Off || await captionsReady(c);
+        if (closed) return;
+        if (!ready) CaptionBox.SelectedIndex = 0;
         else Save(settings with { Captions = c });
+    }
+
+    // The bar turned captions off after a cancelled download, so this copy follows without asking again.
+    public void ShowCaptions(CaptionChoice c)
+    {
+        settings = settings with { Captions = c };
+        var wasLoading = loading;
+        loading = true;
+        CaptionBox.SelectedIndex = (int)c;
+        loading = wasLoading;
     }
 
     void FrameRate_Click(object sender, RoutedEventArgs e)
